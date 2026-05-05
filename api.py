@@ -536,8 +536,15 @@ def all_entities(request: ParseRequest) -> dict:
         if cache_file.exists():
             try:
                 cached = _json.loads(cache_file.read_text(encoding="utf-8"))
-                _universal_cache[cache_key] = cached
-                return cached
+                # Invalidate when the cached layer_categories reference a
+                # category that no longer exists (renames / splits). The
+                # next call rebuilds the cache from scratch.
+                from sleeve_checker.layer_classifier import CATEGORIES
+                cat_set = set(CATEGORIES)
+                cat_values = (cached.get("layer_categories") or {}).values()
+                if all(v in cat_set for v in cat_values):
+                    _universal_cache[cache_key] = cached
+                    return cached
             except Exception:
                 pass
 

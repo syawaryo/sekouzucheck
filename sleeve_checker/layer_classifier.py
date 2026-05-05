@@ -29,22 +29,33 @@ from typing import Any
 
 # UI に表示する「審査・地図化に必要」なカテゴリ。
 # それ以外は「不要」となり、UI からは既定で非表示。
+#
+# 14項目チェック仕様から逆算した 23 個。同期先:
+#   - frontend/src/components/DataExplorer.tsx の GROUP_ORDER
+#   - parser.py 側の category → FloorData フィールド振り分け（後続コミット）
 USEFUL_CATEGORIES: list[str] = [
+    # 躯体・建築
     "通り芯",
     "外壁",
     "内壁",
+    "耐火壁・防火区画",        # v2 追加: 仕様 #6 「複合耐火壁」対応
     "柱・仕上線",
     "梁",
     "スラブ外形",
-    "スラブ情報",
+    "スラブラベル",            # v2 分割: 旧「スラブ情報」（F308 / S番号・厚み）
+    "スラブFL",                # v2 分割: 旧「スラブ情報」（F155 / 面レベル FL+40 等）
     "段差線",
     "床ヌスミ",
+    # 記号・テキスト
     "FL表記",
     "寸法線",
     "P-N番号",
     "部屋名",
     "水勾配",
-    "機器コード",
+    "機器コード_衛生",          # v2 分割: 旧「機器コード」 [衛生]系統別
+    "機器コード_空調",          # v2 分割: 旧「機器コード」 [空調]通常/その他
+    "機器コード_電気",          # v2 分割: 旧「機器コード」 [電気]通常/盤/配置基準
+    # スリーブ本体
     "スリーブ_衛生",
     "スリーブ_空調",
     "スリーブ_電気",
@@ -82,22 +93,24 @@ _RULES: list[tuple[re.Pattern, str]] = [
     # "通心寸法" / "[衛生]文字・寸法" 等が誤分類されるのを防ぐ。
     (re.compile(r"寸法|配管寸|文字・寸法|C16[1234]"), "寸法線"),
 
-    # ---- 機器コード (discipline catch-all) — スリーブ・通常・寸法を
+    # ---- 機器コード (discipline-aware) — スリーブ・通常・寸法を
     # 上で取り切った後の "[衛生] / [電気] / [空調] のその他系統別" に
     # マッチさせる。配管系・電気系統別レイヤーが該当。
-    (re.compile(r"\[衛生\]"), "機器コード"),
+    # v2: 規律別に分離。
+    (re.compile(r"\[衛生\]"), "機器コード_衛生"),
 
     # ---- 通り芯 ----
     (re.compile(r"通心|通芯|通り心|通り芯"), "通り芯"),
     (re.compile(r"C13[12]|C141"),            "通り芯"),
 
     # ---- 壁系 ----
+    # 耐火壁・防火区画は内壁/外壁より優先（複合耐火壁は構造的に区画線扱い）。
+    (re.compile(r"耐火壁|防火区画|防火壁|区画壁|複合耐火|A561|耐火被覆"), "耐火壁・防火区画"),
     (re.compile(r"外壁|既存躯体外壁"),                  "外壁"),
     (re.compile(r"F10[56]_RC壁|A421_壁|RC壁"),          "内壁"),
     (re.compile(r"A422|ALC|A423|PCa|A424|パネル"),     "内壁"),
     (re.compile(r"A441|LGS|ＬＧＳ|A443|ＣＢ|CB|A442"), "内壁"),
     (re.compile(r"A521_壁|壁仕上|壁：仕上"),            "内壁"),
-    (re.compile(r"A561|耐火被覆"),                       "内壁"),
 
     # ---- 柱 ----
     (re.compile(r"F1[0-2]\d?_RC柱|F101|F102|A411|A412"),  "柱・仕上線"),
@@ -114,8 +127,8 @@ _RULES: list[tuple[re.Pattern, str]] = [
     (re.compile(r"F108_2|立上り|RC立上"),           "スラブ外形"),
     (re.compile(r"F108_4|RC開口"),                  "スラブ外形"),
     (re.compile(r"F108_RC見え掛り"),                 "スラブ外形"),
-    (re.compile(r"F308|スラブラベル"),               "スラブ情報"),
-    (re.compile(r"F155|スラブレベル"),               "スラブ情報"),
+    (re.compile(r"F308|スラブラベル"),               "スラブラベル"),
+    (re.compile(r"F155|スラブレベル"),               "スラブFL"),
 
     # ---- 床ヌスミ / 段差 ----
     (re.compile(r"F108_5|床ヌスミ"),                       "床ヌスミ"),
@@ -177,12 +190,9 @@ _RULES: list[tuple[re.Pattern, str]] = [
     (re.compile(r"A245|雲マーク|注意点|A244|段差記号"),      "不要"),
     (re.compile(r"A241|方位|A242|A243|建具記号|A247_断面記号"), "不要"),
 
-    # ---- 電気 / 空調の機器・系統別レイヤー ----
-    (re.compile(r"\[電気\].*\(S\)"),                         "機器コード"),
-    (re.compile(r"\[電気\].*盤|レベル計画|道路勾配"),        "機器コード"),
-    (re.compile(r"\[電気\].*配置基準|その他|通常"),           "機器コード"),
-    (re.compile(r"\[電気\]"),                                 "機器コード"),
-    (re.compile(r"\[空調\].*通常|\[空調\].*その他"),          "機器コード"),
+    # ---- 電気 / 空調の機器・系統別レイヤー (v2: 規律別) ----
+    (re.compile(r"\[電気\]"),                                 "機器コード_電気"),
+    (re.compile(r"\[空調\]"),                                 "機器コード_空調"),
 
     # ---- レイヤー "0" / Defpoints → 不要 ----
     (re.compile(r"^0$|^Defpoints$|defpoint"),                "不要"),
@@ -241,6 +251,15 @@ def classify_layers(
             cache = json.loads(cache_path.read_text(encoding="utf-8"))
         except Exception:
             cache = {}
+        # Drop entries whose category is no longer in CATEGORIES — handles
+        # category renames / splits across versions. The dropped layers will
+        # be re-classified on this call (LLM hit if available, else rules).
+        cat_set = set(CATEGORIES)
+        cache = {
+            name: row
+            for name, row in cache.items()
+            if isinstance(row, dict) and row.get("category") in cat_set
+        }
 
     out: dict[str, dict[str, Any]] = {}
     need_classify: list[dict[str, Any]] = []
@@ -368,32 +387,39 @@ def _system_prompt() -> str:
         "- 'C131_通心' / '通り芯' / 'C141_通心記号' → '通り芯'\n"
         "- '外壁' / '★既存躯体外壁' → '外壁'\n"
         "- 'F105/F106_RC壁' / 'A421_壁:RC' / 'F306_壁ラベル' → '内壁'\n"
+        "- 'A561_耐火被覆' / '複合耐火壁' / '防火区画線' / '区画壁' → '耐火壁・防火区画'\n"
         "- 'F102_RC柱' / 'F201_Ｓ柱' / 'F203_ブレース' / 'A412_柱:Ｓ' / 'エレベーター_間柱' → '柱・仕上線'\n"
         "- 'F104_RC梁' / 'F202_Ｓ梁' / 'F305_梁ラベル' → '梁'\n"
         "- 'F107_RC床' / 'F108_2_立上り' / 'F108_4_開口' / 'F112_基礎' / 'F401_ルーフドレン' / 'A311_吹抜' → 'スラブ外形'\n"
-        "- 'F308_スラブラベル' / 'F155_スラブレベル' → 'スラブ情報'\n"
+        "- 'F308_スラブラベル' (S16, 165t, -60 等) → 'スラブラベル'\n"
+        "- 'F155_スラブレベル' (FL+40, FL-360, 350～300 等) → 'スラブFL'\n"
         "- 'F108_3_RCスラブ段差線' / '段差記号' → '段差線'\n"
         "- 'F108_5_床ヌスミ' → '床ヌスミ'\n"
         "- 'A221_記入文字' (1FL-565 等) / 'A223_レベル' → 'FL表記'\n"
         "- 'C161_通心寸法' / 'C162_その他寸法' / '配管寸' / '文字・寸法' → '寸法線'\n"
-        "- 'A211_室名' (店舗1, 階段室, etc.) → '部屋名'\n"
+        "- 'A211_室名' (店舗1, 階段室, PS, シャフト等) → '部屋名'\n"
         "- '水勾配' → '水勾配'\n"
         "- '[衛生]通常' (P-N-x 並ぶ) → 'P-N番号'\n"
-        "- '[衛生]雨水/汚水/ガス系' / '[電気]通常/非常照明等' / '[空調]通常' → '機器コード'\n"
+        "- '[衛生]雨水/汚水/ガス系' → '機器コード_衛生'\n"
+        "- '[電気]通常/盤/非常照明/配置基準' → '機器コード_電気'\n"
+        "- '[空調]通常/その他' → '機器コード_空調'\n"
         "- 'スリーブ' を含むレイヤー → 規律で 'スリーブ_衛生/空調/電気/その他'\n\n"
         "**IFC クラス名のマッピング**:\n"
-        "- IfcWall* → '内壁' (Name/Tag に '外' があれば '外壁')\n"
+        "- IfcWall* → '内壁' (Name/Tag に '外' があれば '外壁'、'耐火'/'防火'/'区画' があれば '耐火壁・防火区画')\n"
         "- IfcColumn → '柱・仕上線'\n"
         "- IfcBeam → '梁'\n"
         "- IfcSlab / IfcRoof / IfcFooting → 'スラブ外形'\n"
         "- IfcGrid / IfcGridAxis → '通り芯'\n"
         "- IfcOpeningElement / ProvisionForVoid / IfcBuildingElementProxy(スリーブ) → 'スリーブ_その他'\n"
-        "- IfcFlowSegment / IfcDuct* / IfcPipe* → '機器コード'\n"
+        "- IfcFlowSegment / IfcDuct* (空調系) → '機器コード_空調'\n"
+        "- IfcPipe* / IfcSanitary* (衛生系) → '機器コード_衛生'\n"
+        "- IfcCableCarrier* / IfcElectric* → '機器コード_電気'\n"
         "- IfcSpace → '部屋名'\n"
         "- IfcAnnotation / IfcDimension / IfcDoor / IfcWindow → '不要'\n"
         "- IfcBuilding / IfcBuildingStorey / IfcSite / IfcProject → '不要'\n\n"
         "テキスト内容も補助的に使い、確信を高めてください "
-        "(例: テキストに 'EW30(垂壁)' があれば '内壁'、'P-N-1' があれば 'P-N番号')。\n\n"
+        "(例: テキストに 'EW30(垂壁)' があれば '内壁'、'P-N-1' があれば 'P-N番号'、"
+        "'FL+40' があれば 'スラブFL'、'S16 165t' のような表記があれば 'スラブラベル')。\n\n"
         "出力は厳密に以下の JSON のみ:\n"
         '{ "results": [ { "name": "...", "category": "...", "confidence": 0.0-1.0, "reason": "短い理由" } ] }'
     )

@@ -382,6 +382,13 @@ const StaticLayers = memo(function StaticLayers({
             { stroke: "#64748b", strokeWidth: 25, strokeOpacity: 1.0 },
             "iw-raw",
           )}
+          {/* 耐火壁・防火区画 — 内壁トグルに含める扱い。視覚的に
+              区画線として識別できるよう赤系破線で重ねる。 */}
+          {layers.wall && renderRawEntitiesByCategory(
+            universalEntities, layerCategories, "耐火壁・防火区画",
+            { stroke: "#b91c1c", strokeWidth: 30, strokeOpacity: 0.9, strokeDasharray: "300 150" },
+            "fw-raw",
+          )}
         </>
       ) : (
         floorData.wall_lines.map((w, i) => {

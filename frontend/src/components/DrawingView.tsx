@@ -3,7 +3,37 @@ import type { ReactElement } from "react";
 import type { FloorData, Sleeve, CheckResult } from "../types";
 import type { UniversalEntity } from "../api";
 
-type LayerKey = "grid" | "wall" | "outerWall" | "step" | "recess" | "column" | "beam" | "sleeve" | "dim" | "lowerWall" | "slabLevel" | "flZone" | "raw" | "room";
+// Category toggles (1-to-1 with backend USEFUL_CATEGORIES, 23 entries).
+// Plus a second band of "overlay" modes that are typed/computed
+// visualisations (slabLevel = formatted slab labels, flZone = FL tiling,
+// raw = raw DXF passthrough, lowerWall = lower-floor wall overlay).
+type LayerKey =
+  // categories
+  | "grid"           // 通り芯
+  | "outerWall"      // 外壁
+  | "wall"           // 内壁
+  | "firewall"       // 耐火壁・防火区画
+  | "column"         // 柱・仕上線
+  | "beam"           // 梁
+  | "slabOutline"    // スラブ外形
+  | "slabLabel"      // スラブラベル
+  | "slabFL"         // スラブFL
+  | "step"           // 段差線
+  | "recess"         // 床ヌスミ
+  | "flLabel"        // FL表記
+  | "dim"            // 寸法線
+  | "pn"             // P-N番号
+  | "room"           // 部屋名
+  | "waterGradient"  // 水勾配
+  | "equipSanitary"  // 機器コード_衛生
+  | "equipHvac"      // 機器コード_空調
+  | "equipElectric"  // 機器コード_電気
+  | "sleeve"         // スリーブ_* (4 sub via sleeveFilters)
+  // overlays
+  | "lowerWall"
+  | "slabLevel"
+  | "flZone"
+  | "raw";
 type DisciplineKey = "衛生" | "空調" | "電気" | "その他";
 
 interface Props {
@@ -382,9 +412,9 @@ const StaticLayers = memo(function StaticLayers({
             { stroke: "#64748b", strokeWidth: 25, strokeOpacity: 1.0 },
             "iw-raw",
           )}
-          {/* 耐火壁・防火区画 — 内壁トグルに含める扱い。視覚的に
+          {/* 耐火壁・防火区画 — 個別トグル (firewall)。視覚的に
               区画線として識別できるよう赤系破線で重ねる。 */}
-          {layers.wall && renderRawEntitiesByCategory(
+          {layers.firewall && renderRawEntitiesByCategory(
             universalEntities, layerCategories, "耐火壁・防火区画",
             { stroke: "#b91c1c", strokeWidth: 30, strokeOpacity: 0.9, strokeDasharray: "300 150" },
             "fw-raw",
@@ -444,42 +474,39 @@ const StaticLayers = memo(function StaticLayers({
             })
       )}
 
-      {/* Columns / slab outlines / slab info — raw with typed fallback.
-          v2 categories: 旧「スラブ情報」は「スラブラベル」(F308 / S番号・厚み) と
-          「スラブFL」(F155 / 面レベル) に分割。両方をハッチング扱いで
-          重ね描きすることで、従来の見た目を維持しつつ意味は分離する。 */}
-      {layers.column && (
-        universalEntities && layerCategories ? (
-          <>
-            {renderRawEntitiesByCategory(
-              universalEntities, layerCategories, "柱・仕上線",
-              { stroke: "#7c3aed", strokeWidth: 20, strokeOpacity: 0.6 },
-              "col-raw",
-            )}
-            {renderRawEntitiesByCategory(
-              universalEntities, layerCategories, "スラブ外形",
-              { stroke: "#7c3aed", strokeWidth: 18, strokeOpacity: 0.4 },
-              "so-raw",
-            )}
-            {renderRawEntitiesByCategory(
-              universalEntities, layerCategories, "スラブラベル",
-              { stroke: "#94a3b8", strokeWidth: 8, strokeOpacity: 0.4,
-                fill: "#cbd5e1", fillOpacity: 0.18 },
-              "sl-raw",
-            )}
-            {renderRawEntitiesByCategory(
-              universalEntities, layerCategories, "スラブFL",
-              { stroke: "#94a3b8", strokeWidth: 8, strokeOpacity: 0.4,
-                fill: "#cbd5e1", fillOpacity: 0.18 },
-              "sf-raw",
-            )}
-          </>
-        ) : (
-          floorData.column_lines.map((c, i) => (
-            <line key={`col${i}`} x1={c.start[0]} y1={c.start[1]} x2={c.end[0]} y2={c.end[1]}
-              stroke="#7c3aed" strokeWidth={20} opacity={0.6} />
-          ))
-        )
+      {/* Columns / slab categories — each toggled independently to match
+          the data tab 1-to-1. Typed fallback applies only to columns since
+          the legacy FloorData doesn't carry slab outlines as lines. */}
+      {universalEntities && layerCategories ? (
+        <>
+          {layers.column && renderRawEntitiesByCategory(
+            universalEntities, layerCategories, "柱・仕上線",
+            { stroke: "#7c3aed", strokeWidth: 20, strokeOpacity: 0.6 },
+            "col-raw",
+          )}
+          {layers.slabOutline && renderRawEntitiesByCategory(
+            universalEntities, layerCategories, "スラブ外形",
+            { stroke: "#7c3aed", strokeWidth: 18, strokeOpacity: 0.4 },
+            "so-raw",
+          )}
+          {layers.slabLabel && renderRawEntitiesByCategory(
+            universalEntities, layerCategories, "スラブラベル",
+            { stroke: "#94a3b8", strokeWidth: 8, strokeOpacity: 0.4,
+              fill: "#cbd5e1", fillOpacity: 0.18 },
+            "sl-raw",
+          )}
+          {layers.slabFL && renderRawEntitiesByCategory(
+            universalEntities, layerCategories, "スラブFL",
+            { stroke: "#94a3b8", strokeWidth: 8, strokeOpacity: 0.4,
+              fill: "#cbd5e1", fillOpacity: 0.18 },
+            "sf-raw",
+          )}
+        </>
+      ) : (
+        layers.column && floorData.column_lines.map((c, i) => (
+          <line key={`col${i}`} x1={c.start[0]} y1={c.start[1]} x2={c.end[0]} y2={c.end[1]}
+            stroke="#7c3aed" strokeWidth={20} opacity={0.6} />
+        ))
       )}
 
       {/* Beams — raw with typed fallback. */}
@@ -584,8 +611,8 @@ const StaticLayers = memo(function StaticLayers({
         </g>
       ))}
 
-      {/* P-N number labels + arrow lines (gated with sleeve layer — same visual group) */}
-      {layers.sleeve && floorData.pn_labels?.map((pn, i) => (
+      {/* P-N number labels + arrow lines (own toggle, no longer slaved to sleeve) */}
+      {layers.pn && floorData.pn_labels?.map((pn, i) => (
         <g key={`pn${i}`}>
           {pn.arrow_verts && pn.arrow_verts.length === 2 && (
             <line
@@ -603,6 +630,40 @@ const StaticLayers = memo(function StaticLayers({
           </g>
         </g>
       ))}
+
+      {/* New category renderings (1-to-1 with data tab). All routed through
+          the universal-entity payload — typed extractors haven't been added
+          for these yet, so we just paint whatever sits on the relevant
+          layers using a generic style. */}
+      {universalEntities && layerCategories && (
+        <>
+          {layers.flLabel && renderRawEntitiesByCategory(
+            universalEntities, layerCategories, "FL表記",
+            { stroke: "#0891b2", strokeWidth: 6, strokeOpacity: 0.7 },
+            "fll-raw",
+          )}
+          {layers.waterGradient && renderRawEntitiesByCategory(
+            universalEntities, layerCategories, "水勾配",
+            { stroke: "#0ea5e9", strokeWidth: 14, strokeOpacity: 0.8 },
+            "wg-raw",
+          )}
+          {layers.equipSanitary && renderRawEntitiesByCategory(
+            universalEntities, layerCategories, "機器コード_衛生",
+            { stroke: "#3b82f6", strokeWidth: 6, strokeOpacity: 0.55 },
+            "eq-san-raw",
+          )}
+          {layers.equipHvac && renderRawEntitiesByCategory(
+            universalEntities, layerCategories, "機器コード_空調",
+            { stroke: "#f59e0b", strokeWidth: 6, strokeOpacity: 0.55 },
+            "eq-hvac-raw",
+          )}
+          {layers.equipElectric && renderRawEntitiesByCategory(
+            universalEntities, layerCategories, "機器コード_電気",
+            { stroke: "#ef4444", strokeWidth: 6, strokeOpacity: 0.55 },
+            "eq-elec-raw",
+          )}
+        </>
+      )}
     </>
   );
 });
@@ -912,18 +973,29 @@ function DrawingViewInner({
 
   const viewBox = `${vb.x} ${vb.y} ${vb.w} ${vb.h}`;
 
+  // 1-to-1 with USEFUL_CATEGORIES (23: 19 explicit + sleeve aggregate of 4).
+  // Order mirrors GROUP_ORDER on the data tab so the two toolbars stay
+  // mentally aligned.
   const LAYER_ITEMS: [LayerKey, string][] = [
     ["grid", "通り芯"],
-    ["wall", "壁"],
     ["outerWall", "外壁"],
-    ["step", "スラブ段差"],
-    ["recess", "床ヌスミ"],
-    ["column", "柱・仕上"],
+    ["wall", "内壁"],
+    ["firewall", "耐火壁・区画"],
+    ["column", "柱・仕上線"],
     ["beam", "梁"],
-    ["dim", "寸法"],
-    ["slabLevel", "スラブレベル"],
-    ["flZone", "FLゾーン"],
+    ["slabOutline", "スラブ外形"],
+    ["slabLabel", "スラブラベル"],
+    ["slabFL", "スラブFL"],
+    ["step", "段差線"],
+    ["recess", "床ヌスミ"],
+    ["flLabel", "FL表記"],
+    ["dim", "寸法線"],
+    ["pn", "P-N番号"],
     ["room", "部屋名"],
+    ["waterGradient", "水勾配"],
+    ["equipSanitary", "機器(衛生)"],
+    ["equipHvac", "機器(空調)"],
+    ["equipElectric", "機器(電気)"],
     ["sleeve", "スリーブ"],
   ];
   const discColor = (d: DisciplineKey) =>

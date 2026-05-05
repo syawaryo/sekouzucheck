@@ -75,8 +75,37 @@ function App() {
   const [navigateTarget, setNavigateTarget] = useState<[number, number] | null>(null);
   const [highlightCoords, setHighlightCoords] = useState<[number, number][]>([]);
   const [openChecks, setOpenChecks] = useState<Set<number>>(new Set());
+  // Layer toggles. The first block (1-to-1 with data tab GROUP_ORDER) is
+  // category-driven — each toggle corresponds to one of the 23 useful
+  // categories. The second block (overlays) is typed-rendering modes that
+  // are conceptually orthogonal to the categories (computed visualisations).
   const [layers, setLayers] = useState({
-    grid: true, wall: true, outerWall: true, step: true, recess: true, column: true, beam: false, sleeve: true, dim: false, lowerWall: false, slabLevel: false, flZone: false, raw: false, room: true,
+    // categories
+    grid: true,           // 通り芯
+    outerWall: true,      // 外壁
+    wall: true,           // 内壁
+    firewall: true,       // 耐火壁・防火区画
+    column: true,         // 柱・仕上線
+    beam: false,          // 梁
+    slabOutline: true,    // スラブ外形
+    slabLabel: false,     // スラブラベル (F308 / S番号・厚み)
+    slabFL: false,        // スラブFL (F155 / 面レベル)
+    step: true,           // 段差線
+    recess: true,         // 床ヌスミ
+    flLabel: false,       // FL表記
+    dim: false,           // 寸法線
+    pn: true,             // P-N番号
+    room: true,           // 部屋名
+    waterGradient: false, // 水勾配
+    equipSanitary: false, // 機器コード_衛生
+    equipHvac: false,     // 機器コード_空調
+    equipElectric: false, // 機器コード_電気
+    sleeve: true,         // スリーブ_* (4 sub via sleeveFilters)
+    // overlays — typed/computed visualisations (orthogonal)
+    lowerWall: false,
+    slabLevel: false,
+    flZone: false,
+    raw: false,
   });
   const [sleeveFilters, setSleeveFilters] = useState({
     衛生: true, 空調: true, 電気: true, その他: true,

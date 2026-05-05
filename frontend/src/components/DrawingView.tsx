@@ -438,9 +438,9 @@ const StaticLayers = memo(function StaticLayers({
       )}
 
       {/* Columns / slab outlines / slab info — raw with typed fallback.
-          スラブ情報 (F308 スラブラベル, F155 スラブレベルハッチング) is
-          rendered alongside so the slab hatching that defines floor
-          regions becomes visible. */}
+          v2 categories: 旧「スラブ情報」は「スラブラベル」(F308 / S番号・厚み) と
+          「スラブFL」(F155 / 面レベル) に分割。両方をハッチング扱いで
+          重ね描きすることで、従来の見た目を維持しつつ意味は分離する。 */}
       {layers.column && (
         universalEntities && layerCategories ? (
           <>
@@ -455,10 +455,16 @@ const StaticLayers = memo(function StaticLayers({
               "so-raw",
             )}
             {renderRawEntitiesByCategory(
-              universalEntities, layerCategories, "スラブ情報",
+              universalEntities, layerCategories, "スラブラベル",
               { stroke: "#94a3b8", strokeWidth: 8, strokeOpacity: 0.4,
                 fill: "#cbd5e1", fillOpacity: 0.18 },
-              "si-raw",
+              "sl-raw",
+            )}
+            {renderRawEntitiesByCategory(
+              universalEntities, layerCategories, "スラブFL",
+              { stroke: "#94a3b8", strokeWidth: 8, strokeOpacity: 0.4,
+                fill: "#cbd5e1", fillOpacity: 0.18 },
+              "sf-raw",
             )}
           </>
         ) : (

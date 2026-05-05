@@ -23,23 +23,33 @@ interface EntityRow {
 // Display order for the useful groups — these are the categories that
 // matter for sleeve checking + plan readability. Anything else lands in
 // "不要" and is hidden by default behind a toggle.
+//
+// Must stay in sync with sleeve_checker/layer_classifier.py
+// USEFUL_CATEGORIES (24 entries here = 23 backend + "図面ヘッダー" UI-only).
 const GROUP_ORDER = [
   "図面ヘッダー",
+  // 躯体・建築
   "通り芯",
   "外壁",
   "内壁",
+  "耐火壁・防火区画",
   "柱・仕上線",
   "梁",
   "スラブ外形",
-  "スラブ情報",
+  "スラブラベル",
+  "スラブFL",
   "段差線",
   "床ヌスミ",
+  // 記号・テキスト
   "FL表記",
   "寸法線",
+  "P-N番号",
   "部屋名",
   "水勾配",
-  "機器コード",
-  "P-N番号",
+  "機器コード_衛生",
+  "機器コード_空調",
+  "機器コード_電気",
+  // スリーブ本体
   "スリーブ_衛生",
   "スリーブ_空調",
   "スリーブ_電気",
@@ -57,6 +67,10 @@ const DISPLAY_LABEL: Record<string, string> = {
   スリーブ_空調: "空調スリーブ",
   スリーブ_電気: "電気スリーブ",
   スリーブ_その他: "その他スリーブ",
+  機器コード_衛生: "機器コード（衛生）",
+  機器コード_空調: "機器コード（空調）",
+  機器コード_電気: "機器コード（電気）",
+  "耐火壁・防火区画": "耐火壁・防火区画",
 };
 
 function displayName(group: string): string {

@@ -194,9 +194,69 @@ function renderRawEntitiesByCategory(
           fillRule="evenodd"
         />,
       );
+    } else if (t === "TEXT" || t === "MTEXT" || t === "ATTRIB") {
+      // Render any text on this layer at its world position. Decomposed
+      // children (with parent_handle) sit at the correct in-block world
+      // coords because universal_parser ran them through OCS→WCS, so we
+      // don't filter by parent_handle here — that filter is only for the
+      // data-tab compaction, not figure layout.
+      const txt = (e.subtype || "").trim();
+      if (!txt) continue;
+      const px = e.pos?.[0];
+      const py = e.pos?.[1];
+      if (px == null || py == null) continue;
+      const h = Number(e.props?.height || 0) || 200;
+      const rot = Number(e.props?.rotation || 0) || 0;
+      out.push(
+        <g key={`${keyPrefix}-${i}`}
+           transform={`translate(${px},${py}) scale(1,-1)${rot ? ` rotate(${-rot})` : ""}`}>
+          <text x={0} y={0}
+                fontSize={h}
+                fill={style.stroke}
+                fillOpacity={style.strokeOpacity ?? 0.85}
+                fontFamily="'Noto Sans JP',sans-serif">
+            {txt}
+          </text>
+        </g>,
+      );
+    } else if (t === "INSERT") {
+      // INSERTs whose block had no decomposable TEXT (only ATTRIBs) still
+      // carry their values via inner_texts. Render those at the INSERT
+      // position so symbol + value appears together on the drawing too.
+      // Skip when individual TEXT/ATTRIB rows already cover them — i.e.
+      // when there are children with parent_handle pointing at this INSERT
+      // they will render via the TEXT branch above. We detect that by
+      // checking entity props: if the block_inner counts include TEXT or
+      // MTEXT, skip; otherwise emit inner_texts at the symbol position.
+      const innerTexts: unknown = e.props?.inner_texts;
+      const blockInner = e.props?.block_inner as Record<string, number> | undefined;
+      const hasDecomposedText =
+        !!blockInner && ((blockInner.TEXT ?? 0) > 0 || (blockInner.MTEXT ?? 0) > 0);
+      if (
+        Array.isArray(innerTexts) && innerTexts.length > 0 && !hasDecomposedText
+      ) {
+        const px = e.pos?.[0];
+        const py = e.pos?.[1];
+        if (px == null || py == null) continue;
+        out.push(
+          <g key={`${keyPrefix}-${i}-it`}
+             transform={`translate(${px},${py}) scale(1,-1)`}>
+            {(innerTexts as string[]).map((s, j) => (
+              <text key={j} x={0} y={j * 220}
+                    fontSize={200}
+                    fill={style.stroke}
+                    fillOpacity={style.strokeOpacity ?? 0.85}
+                    fontFamily="'Noto Sans JP',sans-serif"
+                    textAnchor="middle">
+                {String(s)}
+              </text>
+            ))}
+          </g>,
+        );
+      }
     }
-    // ARC / TEXT / DIMENSION are intentionally ignored — they're handled
-    // elsewhere or aren't useful as raw SVG lines.
+    // ARC / DIMENSION are still skipped — ARC fragments rarely add signal
+    // when raw, and DIMENSIONs have their own dedicated typed renderer.
   }
   return out;
 }

@@ -65,7 +65,8 @@ def _flatten_dxf(filepath: str | Path) -> UniversalDump:
     type_count: dict[str, int] = {}
     layer_count: dict[str, int] = {}
 
-    def _push(e, *, override_layer: str | None = None) -> None:
+    def _push(e, *, override_layer: str | None = None,
+              parent_handle: str | None = None) -> None:
         t = e.dxftype()
         layer = override_layer or getattr(e.dxf, "layer", "")
         try:
@@ -189,6 +190,9 @@ def _flatten_dxf(filepath: str | Path) -> UniversalDump:
         except Exception:
             pass
 
+        if parent_handle:
+            props["parent_handle"] = parent_handle
+
         entities.append(FlatEntity(
             handle=handle, layer=layer, type=t, subtype=subtype, pos=pos, props=props,
         ))
@@ -257,14 +261,32 @@ def _flatten_dxf(filepath: str | Path) -> UniversalDump:
     for layout in doc.layouts:
         for e in layout:
             _push(e)
+            insert_idx = len(entities) - 1  # remember where the INSERT row sits
 
             if e.dxftype() != "INSERT":
                 continue
 
-            # ATTRIBs hang off INSERTs; expose them as separate rows.
+            try:
+                parent_handle = getattr(e.dxf, "handle", "") or ""
+            except Exception:
+                parent_handle = ""
+
+            # Texts/values collected from this INSERT's children — both
+            # ATTRIBs and decomposed in-block TEXT/MTEXT. We attach them
+            # to the INSERT row as `inner_texts` so the data tab can show
+            # the symbol+value as one logical thing (e.g. "FL ブロック → -565")
+            # even when the value lives in a separate child entity.
+            inner_texts: list[str] = []
+
+            # ATTRIBs hang off INSERTs; expose them as separate rows AND
+            # capture their values onto the parent.
             try:
                 for a in e.attribs:
-                    _push(a, override_layer=getattr(e.dxf, "layer", ""))
+                    _push(a, override_layer=getattr(e.dxf, "layer", ""),
+                          parent_handle=parent_handle)
+                    val = (getattr(a.dxf, "text", "") or "").strip()
+                    if val:
+                        inner_texts.append(val)
             except Exception:
                 pass
 
@@ -272,7 +294,7 @@ def _flatten_dxf(filepath: str | Path) -> UniversalDump:
             bname = getattr(e.dxf, "name", "")
             inner = block_inner_counts.get(bname)
             if inner:
-                entities[-1].props["block_inner"] = inner
+                entities[insert_idx].props["block_inner"] = inner
 
             # Expand block contents only when the block carries semantic
             # text. recursive_decompose handles nested INSERTs, BYLAYER /
@@ -292,9 +314,25 @@ def _flatten_dxf(filepath: str | Path) -> UniversalDump:
                             continue
                         cl = getattr(child.dxf, "layer", "") or ""
                         override = parent_layer if cl == "0" else None
-                        _push(child, override_layer=override)
+                        _push(child, override_layer=override,
+                              parent_handle=parent_handle)
+                        # Capture the value back onto the INSERT row.
+                        if ct in ("TEXT", "ATTRIB", "ATTDEF"):
+                            val = (getattr(child.dxf, "text", "") or "").strip()
+                        elif ct == "MTEXT":
+                            try:
+                                val = (child.plain_text() or "").strip()
+                            except Exception:
+                                val = ""
+                        else:
+                            val = ""
+                        if val:
+                            inner_texts.append(val)
                 except Exception:
                     pass
+
+            if inner_texts:
+                entities[insert_idx].props["inner_texts"] = inner_texts
 
     summary = {
         "entity_count": len(entities),

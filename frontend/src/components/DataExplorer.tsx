@@ -103,7 +103,19 @@ function rowFromEntity(
     label = e.subtype || "(空)";
     properties = e.props.height ? `H=${Math.round(e.props.height)}` : "";
   } else if (e.type === "INSERT") {
-    label = e.subtype || "(無名ブロック)";
+    // Prefer the INSERT's "inner_texts" (ATTRIB values + decomposed in-block
+    // TEXT/MTEXT) for the row label, so a symbol+value composite like
+    // an FL block shows up as "FL ブロック → -565" instead of just the
+    // block name with the value floating off as a separate child row.
+    const innerTexts = e.props.inner_texts;
+    const blockName = e.subtype || "(無名ブロック)";
+    if (Array.isArray(innerTexts) && innerTexts.length > 0) {
+      const joined = innerTexts.slice(0, 4).join(" / ");
+      const more = innerTexts.length > 4 ? ` …+${innerTexts.length - 4}` : "";
+      label = `${blockName} → ${joined}${more}`;
+    } else {
+      label = blockName;
+    }
     const inner = e.props.block_inner;
     if (inner && typeof inner === "object") {
       const total = Object.values(inner).reduce<number>((s, v) => s + Number(v), 0);
@@ -243,6 +255,12 @@ export default function DataExplorer({ floorData, floorId, onNavigate }: Props) 
 
     // Entity rows
     for (const e of universal.entities) {
+      // Skip children that have been folded into a parent INSERT row.
+      // The parent's `inner_texts` already carries the value (e.g.
+      // "FL ブロック → -565"), so emitting the child text/ATTRIB as
+      // an extra row would just duplicate it.
+      if (e.props && e.props.parent_handle) continue;
+
       const baseCat = cats[e.layer] || "不要";
 
       // Sleeve override: if this is the INSERT/CIRCLE at a sleeve's

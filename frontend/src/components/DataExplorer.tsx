@@ -9,14 +9,21 @@ interface Props {
   onNavigate: (coords: [number, number], sleeveId?: string | null) => void;
 }
 
-interface EntityRow {
-  id: string;
-  type: string;       // raw DXF/IFC type
-  rawLayer: string;
-  groupName: string;  // normalized category
-  label: string;      // primary display value
-  properties: string; // secondary display
-  navigate: [number, number] | null;
+// One row per layer (not per entity).  Per-entity rows produced 18k+
+// rows on a typical floor — overwhelmingly duplicate text values that
+// drowned out the actually-actionable lines (sleeves, P-N, room names).
+// Layer-level summary keeps the data tab navigable while still exposing
+// every entity counted in the type breakdown.
+interface LayerRow {
+  id: string;             // unique key for React
+  rawLayer: string;       // DXF layer name
+  groupName: string;      // LLM category
+  totalCount: number;     // entities on this layer
+  typeCounts: Record<string, number>;  // {LINE: 263, CIRCLE: 3}
+  uniqueTexts: string[];  // up to 8 unique TEXT/MTEXT values for the preview
+  uniqueTextTotal: number; // total unique text count (for "+N 種" suffix)
+  sampleSleeve: ReturnType<typeof sleeveSummary> | null;  // first sleeve hit, if any
+  navigate: [number, number] | null;  // first entity position
   sleeveId?: string;
 }
 
@@ -82,68 +89,78 @@ function displayName(group: string): string {
 // (FloorData is used to enrich Sleeve rows with discipline, FL, P-N etc.)
 // ---------------------------------------------------------------------------
 
-function rowFromEntity(
-  e: UniversalEntity,
+// Aggregate every entity belonging to one layer into a single LayerRow.
+// `entities` is the slice of universal.entities that lives on this layer
+// (post-discipline-override; the caller is responsible for routing each
+// entity to the right category before grouping).
+function buildLayerRow(
+  layer: string,
   category: string,
-  sleeveById: Map<string, ReturnType<typeof sleeveSummary>>,
-): EntityRow {
-  // Try to attach to a sleeve when this row is the INSERT/CIRCLE that
-  // represents one. We match on rounded coordinate so identifiers don't
-  // need to be stable across parses.
-  const sleeveKey = e.pos ? `${Math.round(e.pos[0])},${Math.round(e.pos[1])}` : "";
-  const matchedSleeve = sleeveKey ? sleeveById.get(sleeveKey) : undefined;
+  entities: UniversalEntity[],
+  sleeveByPos: Map<string, ReturnType<typeof sleeveSummary>>,
+): LayerRow {
+  const typeCounts: Record<string, number> = {};
+  const seenText = new Set<string>();
+  const uniqueTexts: string[] = [];
+  let firstNavigate: [number, number] | null = null;
+  let sampleSleeve: ReturnType<typeof sleeveSummary> | null = null;
+  let sleeveId: string | undefined;
 
-  let label = e.subtype || e.type;
-  let properties = "";
+  for (const e of entities) {
+    typeCounts[e.type] = (typeCounts[e.type] ?? 0) + 1;
 
-  if (matchedSleeve) {
-    label = matchedSleeve.label;
-    properties = matchedSleeve.props;
-  } else if (e.type === "TEXT" || e.type === "MTEXT") {
-    label = e.subtype || "(空)";
-    properties = e.props.height ? `H=${Math.round(e.props.height)}` : "";
-  } else if (e.type === "INSERT") {
-    // Prefer the INSERT's "inner_texts" (ATTRIB values + decomposed in-block
-    // TEXT/MTEXT) for the row label, so a symbol+value composite like
-    // an FL block shows up as "FL ブロック → -565" instead of just the
-    // block name with the value floating off as a separate child row.
-    const innerTexts = e.props.inner_texts;
-    const blockName = e.subtype || "(無名ブロック)";
-    if (Array.isArray(innerTexts) && innerTexts.length > 0) {
-      const joined = innerTexts.slice(0, 4).join(" / ");
-      const more = innerTexts.length > 4 ? ` …+${innerTexts.length - 4}` : "";
-      label = `${blockName} → ${joined}${more}`;
-    } else {
-      label = blockName;
+    // First entity with a position seeds the navigate target.
+    if (!firstNavigate && e.pos) {
+      firstNavigate = e.pos;
     }
-    const inner = e.props.block_inner;
-    if (inner && typeof inner === "object") {
-      const total = Object.values(inner).reduce<number>((s, v) => s + Number(v), 0);
-      properties = `中身 ${total} 件 (${Object.entries(inner).map(([k, v]) => `${k}:${v}`).join(", ")})`;
+    // Sleeve hit on this layer? Pull the rich summary for the preview.
+    if (e.pos && !sampleSleeve) {
+      const key = `${Math.round(e.pos[0])},${Math.round(e.pos[1])}`;
+      const matched = sleeveByPos.get(key);
+      if (matched) {
+        sampleSleeve = matched;
+        sleeveId = matched.id;
+        firstNavigate = e.pos;
+      }
     }
-  } else if (e.type === "LINE") {
-    const start = e.props.start;
-    const end = e.props.end;
-    if (Array.isArray(start) && Array.isArray(end)) {
-      const len = Math.round(Math.hypot(end[0] - start[0], end[1] - start[1]));
-      properties = `長さ ${len}`;
+    // Collect unique TEXT/MTEXT contents and INSERT block names so the
+    // user has a sense of what the layer carries without expanding it.
+    if (e.type === "TEXT" || e.type === "MTEXT") {
+      const txt = e.subtype?.trim();
+      if (txt && !seenText.has(txt)) {
+        seenText.add(txt);
+        uniqueTexts.push(txt);
+      }
+    } else if (e.type === "INSERT" && e.subtype) {
+      const bname = e.subtype.trim();
+      if (bname && !seenText.has(bname)) {
+        seenText.add(bname);
+        uniqueTexts.push(bname);
+      }
+    } else if (e.type === "DIMENSION") {
+      const m = e.props?.measurement;
+      if (typeof m === "number" && m > 0) {
+        const tag = `寸法 ${Math.round(m)}`;
+        if (!seenText.has(tag)) {
+          seenText.add(tag);
+          uniqueTexts.push(tag);
+        }
+      }
     }
-  } else if (e.type === "CIRCLE") {
-    properties = `r=${Math.round(e.props.radius || 0)}`;
-  } else if (e.type === "DIMENSION") {
-    label = `寸法 ${Math.round(e.props.measurement || 0)}`;
-    properties = e.props.text || "";
   }
 
+  // 8 件まで表示、残りはサマリの末尾で件数表示。
   return {
-    id: `${e.type}-${e.handle}`,
-    type: e.type,
-    rawLayer: e.layer,
+    id: `layer:${layer}`,
+    rawLayer: layer,
     groupName: category,
-    label,
-    properties,
-    navigate: e.pos,
-    sleeveId: matchedSleeve?.id,
+    totalCount: entities.length,
+    typeCounts,
+    uniqueTexts: uniqueTexts.slice(0, 8),
+    uniqueTextTotal: uniqueTexts.length,
+    sampleSleeve,
+    navigate: firstNavigate,
+    sleeveId,
   };
 }
 
@@ -217,116 +234,113 @@ export default function DataExplorer({ floorData, floorId, onNavigate }: Props) 
     return m;
   }, [floorData]);
 
-  const rows = useMemo<EntityRow[]>(() => {
+  // Header pseudo-rows for the 図面ヘッダー card.  These don't represent
+  // a real layer — they surface header metadata (version, units, bbox,
+  // saved by) at the top of the data tab.
+  type HeaderRow = { kind: "header"; id: string; label: string; value: string };
+  const headerRows = useMemo<HeaderRow[]>(() => {
     if (!universal) return [];
-    const cats = universal.layer_categories;
-    const out: EntityRow[] = [];
-
-    // Synthetic header rows from $EXTMIN/EXTMAX, units, version
     const hdr = universal.summary.header || {};
-    if (hdr.version) {
-      out.push({
-        id: "hdr-version", type: "HEADER", rawLayer: "",
-        groupName: "図面ヘッダー", label: "DXF バージョン",
-        properties: String(hdr.version), navigate: null,
-      });
-    }
+    const rows: HeaderRow[] = [];
+    if (hdr.version) rows.push({ kind: "header", id: "hdr-version", label: "DXF バージョン", value: String(hdr.version) });
     if (hdr.insunits !== undefined && hdr.insunits !== null) {
-      out.push({
-        id: "hdr-units", type: "HEADER", rawLayer: "",
-        groupName: "図面ヘッダー", label: "単位",
-        properties: hdr.insunits === 4 ? "mm" : `INSUNITS=${hdr.insunits}`, navigate: null,
-      });
+      rows.push({ kind: "header", id: "hdr-units", label: "単位", value: hdr.insunits === 4 ? "mm" : `INSUNITS=${hdr.insunits}` });
     }
     if (Array.isArray(hdr.extmin) && Array.isArray(hdr.extmax)) {
-      out.push({
-        id: "hdr-bbox", type: "HEADER", rawLayer: "",
-        groupName: "図面ヘッダー", label: "図面範囲",
-        properties: `${hdr.extmin.slice(0, 2).map((n: number) => Math.round(n)).join(", ")} 〜 ${hdr.extmax.slice(0, 2).map((n: number) => Math.round(n)).join(", ")}`,
-        navigate: null,
+      rows.push({
+        kind: "header", id: "hdr-bbox", label: "図面範囲",
+        value: `${hdr.extmin.slice(0, 2).map((n: number) => Math.round(n)).join(", ")} 〜 ${hdr.extmax.slice(0, 2).map((n: number) => Math.round(n)).join(", ")}`,
       });
     }
-    if (hdr.saved_by) {
-      out.push({
-        id: "hdr-savedby", type: "HEADER", rawLayer: "",
-        groupName: "図面ヘッダー", label: "最終保存者",
-        properties: String(hdr.saved_by), navigate: null,
-      });
-    }
+    if (hdr.saved_by) rows.push({ kind: "header", id: "hdr-savedby", label: "最終保存者", value: String(hdr.saved_by) });
     if (universal.summary.entity_count !== undefined) {
-      out.push({
-        id: "hdr-count", type: "HEADER", rawLayer: "",
-        groupName: "図面ヘッダー", label: "総エンティティ数",
-        properties: `${universal.summary.entity_count} 個 (${universal.summary.layer_count} レイヤー)`,
-        navigate: null,
+      rows.push({
+        kind: "header", id: "hdr-count", label: "総エンティティ数",
+        value: `${universal.summary.entity_count} 個 (${universal.summary.layer_count} レイヤー)`,
       });
     }
+    return rows;
+  }, [universal]);
 
-    // Entity rows
+  const layerRows = useMemo<LayerRow[]>(() => {
+    if (!universal) return [];
+    const cats = universal.layer_categories;
+
+    // Group entities by (category, layer).  The category is per-entity,
+    // not per-layer, because sleeve INSERTs/CIRCLEs can override into
+    // their discipline-specific category even when the layer LLM-classified
+    // differently.
+    const grouped = new Map<string, UniversalEntity[]>();   // key = "<cat>\x1f<layer>"
+    const SEP = "\x1f";
     for (const e of universal.entities) {
-      // Skip children that have been folded into a parent INSERT row.
-      // The parent's `inner_texts` already carries the value (e.g.
-      // "FL ブロック → -565"), so emitting the child text/ATTRIB as
-      // an extra row would just duplicate it.
+      // Skip children folded into a parent INSERT row.
       if (e.props && e.props.parent_handle) continue;
-
       const baseCat = cats[e.layer] || "不要";
-
-      // Sleeve override: if this is the INSERT/CIRCLE at a sleeve's
-      // position, route to the discipline category and use the rich label.
       const posKey = e.pos ? `${Math.round(e.pos[0])},${Math.round(e.pos[1])}` : "";
       const sleeveCat = sleeveDisciplineByPos.get(posKey);
       const cat = sleeveCat && (e.type === "INSERT" || e.type === "CIRCLE") ? sleeveCat : baseCat;
-
-      out.push(rowFromEntity(e, cat, sleeveByPos));
+      const key = `${cat}${SEP}${e.layer}`;
+      let bucket = grouped.get(key);
+      if (!bucket) { bucket = []; grouped.set(key, bucket); }
+      bucket.push(e);
     }
-    return out;
+
+    const rows: LayerRow[] = [];
+    for (const [key, ents] of grouped) {
+      const sep = key.indexOf(SEP);
+      const cat = key.slice(0, sep);
+      const layer = key.slice(sep + 1);
+      rows.push(buildLayerRow(layer, cat, ents, sleeveByPos));
+    }
+    return rows;
   }, [universal, sleeveByPos, sleeveDisciplineByPos]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    let pool = rows;
+    let pool = layerRows;
     if (!showHidden) {
       pool = pool.filter(r => r.groupName !== "不要");
     }
     if (!q) return pool;
     return pool.filter(r =>
-      r.label.toLowerCase().includes(q) ||
       r.rawLayer.toLowerCase().includes(q) ||
       r.groupName.toLowerCase().includes(q) ||
-      r.properties.toLowerCase().includes(q) ||
-      r.type.toLowerCase().includes(q)
+      r.uniqueTexts.some(t => t.toLowerCase().includes(q)) ||
+      Object.keys(r.typeCounts).some(t => t.toLowerCase().includes(q))
     );
-  }, [rows, query, showHidden]);
+  }, [layerRows, query, showHidden]);
 
-  // Count hidden so the toggle shows how many are stashed.
+  // Count hidden ENTITIES (sum, not layer count) so the toggle shows how
+  // many actual entities are tucked into 不要.
   const hiddenCount = useMemo(
-    () => rows.filter(r => r.groupName === "不要").length,
-    [rows],
+    () => layerRows.filter(r => r.groupName === "不要").reduce((s, r) => s + r.totalCount, 0),
+    [layerRows],
   );
 
   const grouped = useMemo(() => {
-    type G = { name: string; rawLayers: string[]; entities: EntityRow[] };
+    type G = { name: string; layers: LayerRow[]; entityTotal: number };
     const m = new Map<string, G>();
-    // Pre-seed every category so empty buckets (e.g. 耐火壁・防火区画 in
-    // a drawing without firewall layers) still appear as a card. Keeps
-    // the data tab visually 1-to-1 with the figure-UI toggle row.
-    // Skip "不要" unless the toggle is on, and skip pre-seeding entirely
-    // when a search query is active so results aren't padded with empties.
+    // Pre-seed every category so empty buckets (e.g. 耐火壁・防火区画 on a
+    // drawing without firewall layers) still appear as a card.
     if (!query.trim()) {
       for (const name of GROUP_ORDER) {
         if (name === "不要" && !showHidden) continue;
-        m.set(name, { name, rawLayers: [], entities: [] });
+        if (name === "図面ヘッダー") continue; // header card uses a separate path below
+        m.set(name, { name, layers: [], entityTotal: 0 });
       }
     }
     for (const r of filtered) {
       let g = m.get(r.groupName);
       if (!g) {
-        g = { name: r.groupName, rawLayers: [], entities: [] };
+        g = { name: r.groupName, layers: [], entityTotal: 0 };
         m.set(r.groupName, g);
       }
-      g.entities.push(r);
-      if (r.rawLayer && !g.rawLayers.includes(r.rawLayer)) g.rawLayers.push(r.rawLayer);
+      g.layers.push(r);
+      g.entityTotal += r.totalCount;
+    }
+    // Layers within each group: descending by entity count.
+    for (const g of m.values()) {
+      g.layers.sort((a, b) => b.totalCount - a.totalCount);
     }
     return [...m.values()].sort((a, b) => {
       const d = groupOrderIdx(a.name) - groupOrderIdx(b.name);
@@ -408,10 +422,9 @@ export default function DataExplorer({ floorData, floorId, onNavigate }: Props) 
         borderBottom: "1px solid #f3f4f6",
         background: "#fafafa",
       }}>
-        <span style={{ width: 70, flexShrink: 0 }}>タイプ</span>
-        <span style={{ minWidth: 140, flexShrink: 0 }}>名前</span>
-        <span style={{ width: 200, flexShrink: 0 }}>レイヤー</span>
-        <span style={{ flex: 1 }}>プロパティ</span>
+        <span style={{ width: 220, flexShrink: 0 }}>レイヤー</span>
+        <span style={{ width: 70, flexShrink: 0, textAlign: "right" }}>件数</span>
+        <span style={{ flex: 1, paddingLeft: 14 }}>内訳・主要値</span>
       </div>
 
       <div style={{ flex: 1, overflow: "auto", marginLeft: -4 }}>
@@ -420,28 +433,61 @@ export default function DataExplorer({ floorData, floorId, onNavigate }: Props) 
             図面を選択してください
           </div>
         )}
-        {universal && grouped.length === 0 && (
+        {universal && grouped.length === 0 && headerRows.length === 0 && (
           <div style={{ color: "#9ca3af", textAlign: "center", marginTop: 60, fontSize: 13 }}>
             該当するデータがありません
           </div>
         )}
+
+        {/* 図面ヘッダーカード */}
+        {!query.trim() && headerRows.length > 0 && (
+          <div style={{ borderBottom: "1px solid #f3f4f6" }}>
+            <div
+              onClick={() => toggleGroup("図面ヘッダー")}
+              style={{
+                padding: "10px 4px",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 10,
+                userSelect: "none",
+              }}
+            >
+              <span style={{ color: "#c4c4c8", fontSize: 9, width: 10, textAlign: "center", marginTop: 4 }}>
+                {openGroups.has("図面ヘッダー") || autoExpand ? "⌄" : "›"}
+              </span>
+              <span style={{ flex: 1, fontWeight: 500, color: "#111827", letterSpacing: -0.1 }}>
+                図面ヘッダー
+              </span>
+              <span style={{ color: "#9ca3af", fontSize: 12, fontVariantNumeric: "tabular-nums" }}>
+                {headerRows.length}
+              </span>
+            </div>
+            {(openGroups.has("図面ヘッダー") || autoExpand) && (
+              <div style={{ paddingBottom: 6 }}>
+                {headerRows.map(h => (
+                  <div key={h.id} style={{
+                    padding: "5px 4px 5px 32px",
+                    display: "flex",
+                    alignItems: "baseline",
+                    gap: 14,
+                    fontSize: 12,
+                  }}>
+                    <span style={{ color: "#374151", fontWeight: 500, minWidth: 220, flexShrink: 0 }}>
+                      {h.label}
+                    </span>
+                    <span style={{ color: "#9ca3af", flex: 1 }}>{h.value}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {grouped.map((g, gi) => {
           const isOpen = openGroups.has(g.name) || autoExpand;
-          // Useful (= not 不要) groups always render every entity — these
-          // are the ones the inspector actually cares about, so we never
-          // hide rows behind a "+N more". Only the noisy "不要" bucket is
-          // capped, since it can hold thousands of decorative shapes that
-          // would otherwise freeze the browser.
-          const isUnneeded = g.name === "不要";
-          const MAX_RENDER = isUnneeded ? 500 : Number.POSITIVE_INFINITY;
-          const visible = isUnneeded
-            ? g.entities.slice(0, MAX_RENDER)
-            : g.entities;
-          const truncated = isUnneeded
-            ? Math.max(0, g.entities.length - visible.length)
-            : 0;
           return (
-            <div key={g.name} style={gi > 0 ? { borderTop: "1px solid #f3f4f6" } : undefined}>
+            <div key={g.name} style={gi > 0 || headerRows.length > 0 ? { borderTop: "1px solid #f3f4f6" } : undefined}>
               <div
                 onClick={() => toggleGroup(g.name)}
                 style={{
@@ -471,88 +517,95 @@ export default function DataExplorer({ floorData, floorId, onNavigate }: Props) 
                   <span style={{ fontWeight: 500, color: "#111827", letterSpacing: -0.1 }}>
                     {displayName(g.name)}
                   </span>
-                  {g.rawLayers.length > 0 && (
-                    <span style={{
-                      fontSize: 10.5,
-                      color: "#9ca3af",
-                      letterSpacing: 0.1,
-                      whiteSpace: "pre-wrap",
-                      wordBreak: "break-all",
-                      overflowWrap: "anywhere",
-                      minWidth: 0,
-                    }}>
-                      {g.rawLayers.join(" · ")}
-                    </span>
-                  )}
+                  <span style={{ fontSize: 10.5, color: "#9ca3af" }}>
+                    {g.layers.length} レイヤー / {g.entityTotal.toLocaleString()} 件
+                  </span>
                 </div>
-                <span style={{
-                  color: "#9ca3af",
-                  fontSize: 12,
-                  fontVariantNumeric: "tabular-nums",
-                  marginTop: 2,
-                }}>
-                  {g.entities.length}
-                </span>
               </div>
-              {isOpen && (
+              {isOpen && g.layers.length > 0 && (
                 <div style={{ paddingBottom: 6 }}>
-                  {visible.map(r => (
-                    <div
-                      key={r.id}
-                      onClick={() => r.navigate && onNavigate(r.navigate, r.sleeveId)}
-                      style={{
-                        padding: "5px 4px 5px 32px",
-                        cursor: r.navigate ? "pointer" : "default",
-                        display: "flex",
-                        alignItems: "baseline",
-                        gap: 14,
-                        fontSize: 12,
-                        borderRadius: 4,
-                        transition: "background 80ms",
-                      }}
-                      onMouseEnter={(e) => (e.currentTarget.style.background = "#fafafa")}
-                      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                    >
-                      <span style={{ color: "#9ca3af", width: 70, flexShrink: 0, fontSize: 11 }}>
-                        {r.type}
-                      </span>
-                      <span style={{ color: "#374151", fontWeight: 500, minWidth: 140, flexShrink: 0 }}>
-                        {r.label}
-                      </span>
-                      <span style={{
-                        color: r.rawLayer ? "#6b7280" : "#d1d5db",
-                        fontSize: 10.5,
-                        letterSpacing: 0.1,
-                        width: 200,
-                        flexShrink: 0,
-                        whiteSpace: "pre-wrap",
-                        wordBreak: "break-all",
-                        overflowWrap: "anywhere",
-                        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-                      }}>
-                        {r.rawLayer || "—"}
-                      </span>
-                      <span style={{
-                        color: "#9ca3af",
-                        flex: 1,
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                      }}>
-                        {r.properties}
-                      </span>
-                    </div>
-                  ))}
-                  {truncated > 0 && (
-                    <div style={{
-                      padding: "6px 4px 6px 32px",
-                      color: "#9ca3af",
-                      fontSize: 11,
-                      fontStyle: "italic",
-                    }}>
-                      …他 {truncated} 件は検索で絞り込んでください
-                    </div>
-                  )}
+                  {g.layers.map(r => {
+                    const types = Object.entries(r.typeCounts).sort((a, b) => b[1] - a[1]);
+                    const typesStr = types.map(([t, c]) => `${t}:${c}`).join(", ");
+                    const sampleStr = r.uniqueTexts.length > 0
+                      ? r.uniqueTexts.join(" / ")
+                          + (r.uniqueTextTotal > r.uniqueTexts.length ? ` …+${r.uniqueTextTotal - r.uniqueTexts.length}種` : "")
+                      : "";
+                    return (
+                      <div
+                        key={r.id}
+                        onClick={() => r.navigate && onNavigate(r.navigate, r.sleeveId)}
+                        style={{
+                          padding: "6px 4px 6px 32px",
+                          cursor: r.navigate ? "pointer" : "default",
+                          display: "flex",
+                          alignItems: "flex-start",
+                          gap: 14,
+                          fontSize: 12,
+                          borderRadius: 4,
+                          transition: "background 80ms",
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = "#fafafa")}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                      >
+                        <span style={{
+                          color: "#374151",
+                          width: 220,
+                          flexShrink: 0,
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-all",
+                          overflowWrap: "anywhere",
+                          fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                          fontSize: 11,
+                        }}>
+                          {r.rawLayer}
+                        </span>
+                        <span style={{
+                          color: "#111827",
+                          width: 70,
+                          flexShrink: 0,
+                          textAlign: "right",
+                          fontVariantNumeric: "tabular-nums",
+                          fontWeight: 500,
+                        }}>
+                          {r.totalCount.toLocaleString()}
+                        </span>
+                        <div style={{
+                          flex: 1,
+                          minWidth: 0,
+                          paddingLeft: 14,
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 2,
+                        }}>
+                          <span style={{ color: "#6b7280", fontSize: 11 }}>
+                            {typesStr}
+                          </span>
+                          {sampleStr && (
+                            <span style={{
+                              color: "#9ca3af",
+                              fontSize: 11,
+                              whiteSpace: "pre-wrap",
+                              wordBreak: "break-all",
+                              overflowWrap: "anywhere",
+                            }}>
+                              {sampleStr}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {isOpen && g.layers.length === 0 && (
+                <div style={{
+                  padding: "6px 4px 10px 32px",
+                  color: "#9ca3af",
+                  fontSize: 11,
+                  fontStyle: "italic",
+                }}>
+                  該当レイヤーなし
                 </div>
               )}
             </div>

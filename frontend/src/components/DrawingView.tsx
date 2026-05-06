@@ -171,6 +171,30 @@ function renderRawEntitiesByCategory(
           fillOpacity={style.fillOpacity}
         />,
       );
+    } else if (t === "INSERT") {
+      // INSERT entities are block references — their geometry lives in
+      // the block definition, which the universal_parser does NOT recurse
+      // into (perf: would 4× the entity count). To still convey "there
+      // is something at this position", drop a small filled marker at
+      // the insert point in the category's color.
+      // Sleeves / grid bubbles / P-N / room names already render via
+      // dedicated typed paths, so this only fills the gap for FL-value
+      // markers, slab number bubbles, step symbols, equipment marks etc.
+      const cx = e.pos?.[0];
+      const cy = e.pos?.[1];
+      if (cx == null || cy == null) continue;
+      const markerR = (style.strokeWidth ?? 10) * 4;
+      out.push(
+        <circle
+          key={`${keyPrefix}-${i}`}
+          cx={cx} cy={cy} r={markerR}
+          fill={style.stroke ?? "#94a3b8"}
+          fillOpacity={(style.strokeOpacity ?? 0.7) * 0.6}
+          stroke={style.stroke}
+          strokeWidth={(style.strokeWidth ?? 10) * 0.3}
+          strokeOpacity={style.strokeOpacity}
+        />,
+      );
     } else if (t === "HATCH") {
       // Hatch boundaries — we don't reproduce the actual diagonal lines,
       // just outline + fill the region so it reads as "this area is

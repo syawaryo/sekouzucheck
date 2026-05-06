@@ -278,40 +278,48 @@ def _flatten_dxf(filepath: str | Path) -> UniversalDump:
             if inner:
                 entities[insert_idx].props["block_inner"] = inner
 
-            # Fully expand the block. recursive_decompose handles nested
-            # INSERTs, BYLAYER/BYBLOCK inheritance, and OCS→WCS transform.
-            # Every child entity (geometric + text) gets emitted as its
-            # own row tagged with `parent_handle`, so:
-            #   - the data tab can fold children under the parent INSERT
-            #   - the drawing view can render the geometric children
-            #   - 不要-classified parents simply have their children
-            #     hidden along with the parent (categorisation cascades)
-            parent_layer = getattr(e.dxf, "layer", "")
-            try:
-                for child in recursive_decompose([e]):
-                    ct = child.dxftype()
-                    if ct == "INSERT":
-                        continue  # already emitted as the top-level row
-                    if ct not in EMITTABLE_CHILD_TYPES:
-                        continue
-                    cl = getattr(child.dxf, "layer", "") or ""
-                    override = parent_layer if cl == "0" else None
-                    _push(child, override_layer=override,
-                          parent_handle=parent_handle)
-                    # Roll text values up onto the INSERT row so the data
-                    # tab can show "FL ブロック → -565" inline.
-                    if ct in TEXT_INNER:
-                        if ct == "MTEXT":
-                            try:
-                                val = (child.plain_text() or "").strip()
-                            except Exception:
-                                val = ""
-                        else:
-                            val = (getattr(child.dxf, "text", "") or "").strip()
-                        if val:
-                            inner_texts.append(val)
-            except Exception:
-                pass
+            # Expand the block when it's small enough that recursive_decompose
+            # won't blow up memory. Skipping huge decoration blocks (図枠,
+            # detail-fragments, デッキ受け patterns with 200+ lines apiece)
+            # keeps the universal dump under Render's 512MB free-tier RAM
+            # budget — production was 502'ing on full expansion of the 1F
+            # sheet because each top-level INSERT triggers another walk
+            # through the block reference graph.
+            #
+            # The blocks we actually care about expanding are tiny:
+            #   sleeve mark = CIRCLE + 2 LINEs                      (3 entities)
+            #   通り芯 bubble = CIRCLE + TEXT                        (2)
+            #   F308 slab marker = HATCH + INSERT/CIRCLE + TEXT      (3-5)
+            #   FL level bubble = LINE + INSERT + HATCH + CIRCLE + TEXT (5)
+            #   段差記号 = LINE + ARC                                (2-4)
+            # Whereas 図枠 / detail blocks have hundreds of children. The
+            # 50-entity cap admits the former and rejects the latter.
+            inner_total = sum(inner.values()) if inner else 0
+            if inner_total > 0 and inner_total <= 50:
+                parent_layer = getattr(e.dxf, "layer", "")
+                try:
+                    for child in recursive_decompose([e]):
+                        ct = child.dxftype()
+                        if ct == "INSERT":
+                            continue
+                        if ct not in EMITTABLE_CHILD_TYPES:
+                            continue
+                        cl = getattr(child.dxf, "layer", "") or ""
+                        override = parent_layer if cl == "0" else None
+                        _push(child, override_layer=override,
+                              parent_handle=parent_handle)
+                        if ct in TEXT_INNER:
+                            if ct == "MTEXT":
+                                try:
+                                    val = (child.plain_text() or "").strip()
+                                except Exception:
+                                    val = ""
+                            else:
+                                val = (getattr(child.dxf, "text", "") or "").strip()
+                            if val:
+                                inner_texts.append(val)
+                except Exception:
+                    pass
 
             if inner_texts:
                 entities[insert_idx].props["inner_texts"] = inner_texts

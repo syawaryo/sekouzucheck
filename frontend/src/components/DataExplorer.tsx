@@ -299,6 +299,17 @@ export default function DataExplorer({ floorData, floorId, onNavigate }: Props) 
   const grouped = useMemo(() => {
     type G = { name: string; rawLayers: string[]; entities: EntityRow[] };
     const m = new Map<string, G>();
+    // Pre-seed every category so empty buckets (e.g. 耐火壁・防火区画 in
+    // a drawing without firewall layers) still appear as a card. Keeps
+    // the data tab visually 1-to-1 with the figure-UI toggle row.
+    // Skip "不要" unless the toggle is on, and skip pre-seeding entirely
+    // when a search query is active so results aren't padded with empties.
+    if (!query.trim()) {
+      for (const name of GROUP_ORDER) {
+        if (name === "不要" && !showHidden) continue;
+        m.set(name, { name, rawLayers: [], entities: [] });
+      }
+    }
     for (const r of filtered) {
       let g = m.get(r.groupName);
       if (!g) {
@@ -313,7 +324,7 @@ export default function DataExplorer({ floorData, floorId, onNavigate }: Props) 
       if (d !== 0) return d;
       return a.name.localeCompare(b.name, "ja");
     });
-  }, [filtered]);
+  }, [filtered, query, showHidden]);
 
   const autoExpand = query.trim().length > 0;
 

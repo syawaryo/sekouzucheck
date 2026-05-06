@@ -148,12 +148,21 @@ function rowFromEntity(
 }
 
 function sleeveSummary(s: FloorData["sleeves"][number]) {
+  // Display rule:
+  //   round           → φ<diameter>           (e.g. φ250)
+  //   rect            → □<width>×<height>    (e.g. □600×250)
+  //   horizontal +     prepend "横" prefix    (e.g. 横φ250 / 横□600×250)
+  //
+  // The previous implementation forced `横φ` for every horizontal sleeve
+  // regardless of shape, which collapsed rect-horizontal openings (cable
+  // racks etc.) down to a meaningless single diameter — a 600×250 cable
+  // rack opening ended up rendered as "横φ250".
   const isHorizontal = s.orientation === "horizontal";
-  const size = isHorizontal
-    ? `横φ${Math.round(s.diameter)}`
-    : s.shape === "rect"
-      ? `□${Math.round(s.width ?? 0)}×${Math.round(s.height ?? 0)}`
-      : `φ${Math.round(s.diameter)}`;
+  const isRect = s.shape === "rect";
+  const dims = isRect && s.width && s.height
+    ? `□${Math.round(s.width)}×${Math.round(s.height)}`
+    : `φ${Math.round(s.diameter)}`;
+  const size = isHorizontal ? `横${dims}` : dims;
   const props = [
     size,
     s.fl_text,

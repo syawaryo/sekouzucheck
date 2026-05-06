@@ -56,15 +56,19 @@ export default function SleeveInfo({ sleeve, results }: Props) {
   };
   const typeLabel = sleeve.sleeve_type ? SLEEVE_TYPE_LABEL[sleeve.sleeve_type] : null;
   const isHorizontal = sleeve.orientation === "horizontal";
-  // Horizontal sleeves are wall penetrations — their plan-view rect is
-  // (pipe length × bore), not the physical cross-section. Display the bore.
-  const shapeLabel = isHorizontal ? "横" : (sleeve.shape === "rect" ? "角" : "丸");
-  const sizeText =
-    isHorizontal
-      ? `横 φ${Math.round(sleeve.diameter)}mm`
-      : (sleeve.shape === "rect" && sleeve.width && sleeve.height
-          ? `${shapeLabel} ${Math.round(sleeve.width)}×${Math.round(sleeve.height)}mm`
-          : `${shapeLabel} φ${Math.round(sleeve.diameter)}mm`);
+  const isRect = sleeve.shape === "rect";
+  // Display rule (consistent with DataExplorer.sleeveSummary):
+  //   round   → φ<diameter>
+  //   rect    → <width>×<height>
+  //   horizontal sleeves prepend "横".
+  // Horizontal round = pipe penetration (only bore is meaningful).
+  // Horizontal rect = rectangular wall opening — cable rack / duct passage.
+  // Earlier this branch forced φ-only on every horizontal sleeve, which
+  // mis-displayed e.g. a 600×250 cable rack opening as "横 φ250".
+  const shapeLabel = isHorizontal ? "横" : (isRect ? "角" : "丸");
+  const sizeText = isRect && sleeve.width && sleeve.height
+    ? `${shapeLabel} ${Math.round(sleeve.width)}×${Math.round(sleeve.height)}mm`
+    : `${shapeLabel} φ${Math.round(sleeve.diameter)}mm`;
 
   const worst = ngResults.length > 0 ? "NG" : warnResults.length > 0 ? "WARNING" : "OK";
   const badgeStyle: Record<string, { bg: string; color: string }> = {

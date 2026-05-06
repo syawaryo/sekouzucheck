@@ -199,61 +199,43 @@ def _flatten_dxf(filepath: str | Path) -> UniversalDump:
         type_count[t] = type_count.get(t, 0) + 1
         layer_count[layer] = layer_count.get(layer, 0) + 1
 
-    # Pre-compute "what's inside each named block".
-    # We use this both to annotate INSERTs (block_inner counts) and to
-    # decide whether to *expand* the block contents during the walk.
+    # Pre-compute the type breakdown of each named block so the INSERT
+    # row can be annotated with `block_inner` counts (UI shows
+    # "中身 N 件 (LINE:14, CIRCLE:22, …)").
     #
-    # Expansion rule: a block should be expanded if it (or anything it
-    # contains transitively, via nested INSERTs) carries TEXT / MTEXT /
-    # ATTRIB / ATTDEF. Those text values are semantically meaningful
-    # (P-N number, axis label "A"/"1", FL value "FL-565" …) and need to
-    # surface as their own rows. Pure geometric blocks (only LINE / CIRCLE
-    # / ARC) are decoration — leave them collapsed.
-    EXPANDABLE_INNER = {"TEXT", "MTEXT", "ATTRIB", "ATTDEF"}
-
-    # Step 1: direct children — types per block + child block names.
+    # We **fully expand every INSERT** below — the block's geometric
+    # children (LINE / CIRCLE / ARC / LWPOLYLINE / HATCH) and its text
+    # children (TEXT / MTEXT / ATTRIB / ATTDEF) all get emitted as their
+    # own rows, tagged with `parent_handle` so the data tab can fold
+    # them under the INSERT and the drawing view can render them. The
+    # earlier "expand only blocks containing text" gate dropped the
+    # geometry of every decoration block (面取り記号, 通り芯バブル,
+    # スラブ番号フレーム など), which the user explicitly asked to
+    # surface — "INSERT も含めて網羅的に取得" was the requirement.
     block_inner_counts: dict[str, dict[str, int]] = {}
-    direct_text: dict[str, bool] = {}
-    direct_child_blocks: dict[str, set[str]] = {}
     for blk in doc.blocks:
         if blk.name.startswith("*"):
             continue
         types: dict[str, int] = {}
-        children: set[str] = set()
         for child in blk:
             ct = child.dxftype()
             types[ct] = types.get(ct, 0) + 1
-            if ct == "INSERT":
-                cname = getattr(child.dxf, "name", "")
-                if cname and not cname.startswith("*"):
-                    children.add(cname)
         if types:
             block_inner_counts[blk.name] = types
-            direct_text[blk.name] = any(t in EXPANDABLE_INNER for t in types)
-            direct_child_blocks[blk.name] = children
 
-    # Step 2: transitive expansion check — DFS over the block reference
-    # graph with memoisation + cycle guard.
-    block_should_expand: dict[str, bool] = {}
+    # All known DXF entity types we know how to flatten in `_push`.
+    # Anything in this set is worth emitting as a separate row when it
+    # appears as a recursed child of an INSERT.
+    EMITTABLE_CHILD_TYPES = {
+        "LINE", "CIRCLE", "ARC", "ELLIPSE",
+        "LWPOLYLINE", "POLYLINE", "POINT",
+        "TEXT", "MTEXT", "ATTRIB", "ATTDEF",
+        "HATCH", "DIMENSION",
+    }
 
-    def _has_text_recursive(name: str, visiting: set[str]) -> bool:
-        if name in block_should_expand:
-            return block_should_expand[name]
-        if name in visiting:
-            return False  # cycle: assume no until something else proves it
-        visiting.add(name)
-        result = direct_text.get(name, False)
-        if not result:
-            for child in direct_child_blocks.get(name, ()):
-                if _has_text_recursive(child, visiting):
-                    result = True
-                    break
-        visiting.discard(name)
-        block_should_expand[name] = result
-        return result
-
-    for bname in direct_text:
-        _has_text_recursive(bname, set())
+    # Text-only subset — used downstream to roll up child values onto the
+    # INSERT row as `inner_texts`.
+    TEXT_INNER = {"TEXT", "MTEXT", "ATTRIB", "ATTDEF"}
 
     from ezdxf.disassemble import recursive_decompose
 
@@ -296,40 +278,40 @@ def _flatten_dxf(filepath: str | Path) -> UniversalDump:
             if inner:
                 entities[insert_idx].props["block_inner"] = inner
 
-            # Expand block contents only when the block carries semantic
-            # text. recursive_decompose handles nested INSERTs, BYLAYER /
-            # BYBLOCK inheritance, and OCS→WCS transform automatically.
-            if block_should_expand.get(bname, False):
-                parent_layer = getattr(e.dxf, "layer", "")
-                try:
-                    for child in recursive_decompose([e]):
-                        ct = child.dxftype()
-                        # Skip the INSERT itself (already emitted).
-                        if ct == "INSERT":
-                            continue
-                        # Only emit the meaningful children. Decomposed
-                        # geometric junk (LINE/ARC etc. from the block
-                        # frame) would just bloat the panel — drop it.
-                        if ct not in EXPANDABLE_INNER:
-                            continue
-                        cl = getattr(child.dxf, "layer", "") or ""
-                        override = parent_layer if cl == "0" else None
-                        _push(child, override_layer=override,
-                              parent_handle=parent_handle)
-                        # Capture the value back onto the INSERT row.
-                        if ct in ("TEXT", "ATTRIB", "ATTDEF"):
-                            val = (getattr(child.dxf, "text", "") or "").strip()
-                        elif ct == "MTEXT":
+            # Fully expand the block. recursive_decompose handles nested
+            # INSERTs, BYLAYER/BYBLOCK inheritance, and OCS→WCS transform.
+            # Every child entity (geometric + text) gets emitted as its
+            # own row tagged with `parent_handle`, so:
+            #   - the data tab can fold children under the parent INSERT
+            #   - the drawing view can render the geometric children
+            #   - 不要-classified parents simply have their children
+            #     hidden along with the parent (categorisation cascades)
+            parent_layer = getattr(e.dxf, "layer", "")
+            try:
+                for child in recursive_decompose([e]):
+                    ct = child.dxftype()
+                    if ct == "INSERT":
+                        continue  # already emitted as the top-level row
+                    if ct not in EMITTABLE_CHILD_TYPES:
+                        continue
+                    cl = getattr(child.dxf, "layer", "") or ""
+                    override = parent_layer if cl == "0" else None
+                    _push(child, override_layer=override,
+                          parent_handle=parent_handle)
+                    # Roll text values up onto the INSERT row so the data
+                    # tab can show "FL ブロック → -565" inline.
+                    if ct in TEXT_INNER:
+                        if ct == "MTEXT":
                             try:
                                 val = (child.plain_text() or "").strip()
                             except Exception:
                                 val = ""
                         else:
-                            val = ""
+                            val = (getattr(child.dxf, "text", "") or "").strip()
                         if val:
                             inner_texts.append(val)
-                except Exception:
-                    pass
+            except Exception:
+                pass
 
             if inner_texts:
                 entities[insert_idx].props["inner_texts"] = inner_texts

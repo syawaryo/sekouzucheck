@@ -271,14 +271,54 @@ def _infer_orientation_from_walls(
     vertical slab penetration without context. If the sleeve centre is
     within roughly half-a-wall-thickness of any wall segment, reclassify it
     as horizontal.
+
+    Tolerance is per wall type because the actual wall thickness varies a
+    lot — outer RC walls are 300-500mm, interior partitions 100-150mm —
+    and a single 200mm threshold either misses 外壁 penetrations or
+    false-positives every interior sleeve within 200mm of a 仕上 line.
     """
     if not wall_lines:
         return
-    # Tight tolerance (half a typical 150–200 mm wall thickness). Widening to
-    # 400–500 mm to catch thicker outer walls was tested and caused ~12× more
-    # false positives than true positives (interior slab sleeves happen to be
-    # within 0.5 m of some wall). Accept missing the thick-外壁 edge case.
-    _ON_WALL_TOL = 200.0
+    # Half-thickness tolerance — sleeve centre on the wall centreline can
+    # land up to ~half the wall's actual thickness from any drawn line.
+    # Outer walls span structure (300-500mm) plus interior/exterior finish
+    # layers (50-100mm each side), so the centre of a sleeve drawn on the
+    # wall can be 500-700mm from any single drawn line. Bumped to 600mm
+    # after a user reported edge-of-building horizontal pipes still
+    # rendering as round-vertical at 400mm tolerance.
+    _TOL_BY_TYPE: dict[str, float] = {
+        "外壁": 600.0,        # 既存躯体外壁 / RC 外壁 + 内外仕上
+        "RC壁": 400.0,        # F105/F106 RC壁 + 仕上 + 取付ピッチ
+        "ALC": 300.0,
+        "PCa": 400.0,
+        "パネル": 200.0,
+        "LGS": 200.0,
+        "CB": 250.0,
+        # 壁心 (C151) は中心線。配管立上りは中心線の左右どちらかに
+        # オフセットして描かれる (壁芯から ±300〜400mm) — 給排水
+        # ライザーは「壁心の側」に寄せて配置されるのが慣習なので
+        # 500mm まで広げないと拾い損ねる。
+        "壁心": 500.0,
+        "仕上": 150.0,
+        "耐火被覆": 150.0,
+        "不明": 300.0,
+    }
+    _DEFAULT_TOL = 300.0
+
+    # Pipe-flow labels — these are horizontal-run pipes (drainage, water
+    # supply, gas) by construction. Even when their distance to the wall
+    # centreline exceeds the geometric tolerance, the label is strong
+    # evidence that the sleeve passes through a wall horizontally.
+    # Vertical risers don't normally carry these labels.
+    _RE_PIPE_FLOW = re.compile(
+        r"^(RD|KD|KDK|KV|CW[WRN]?|CDW|SD|SP[D]?|HW|HR|CHR?|HS|WD|N2|"
+        r"D:|R:|H:|V:|W:|G\(|RA|EA|SA|OA|KEA|SOA)\b",
+        re.IGNORECASE,
+    )
+
+    def _is_pipe_flow(label: str | None) -> bool:
+        return bool(label and _RE_PIPE_FLOW.match(label))
+
     for s in sleeves:
         # Round sleeves on a wall line are reclassified even if the aspect
         # pass already tentatively set them to "vertical" — a wall centroid
@@ -288,15 +328,19 @@ def _infer_orientation_from_walls(
         if s.orientation == "horizontal":
             continue
         sx, sy = s.center
-        # Quick bbox cull keeps this O(N·M) tolerable on 200+ sleeves.
+        # Pipe-flow labelled sleeves get a generous label-aware tolerance
+        # boost (×2). They're almost always horizontal runs through walls.
+        is_flow = _is_pipe_flow(s.label_text)
         for w in wall_lines:
+            base_tol = _TOL_BY_TYPE.get(w.wall_type, _DEFAULT_TOL)
+            tol = base_tol * 2 if is_flow else base_tol
             x1, y1 = w.start
             x2, y2 = w.end
-            if min(x1, x2) - _ON_WALL_TOL > sx: continue
-            if max(x1, x2) + _ON_WALL_TOL < sx: continue
-            if min(y1, y2) - _ON_WALL_TOL > sy: continue
-            if max(y1, y2) + _ON_WALL_TOL < sy: continue
-            if _point_to_segment_distance(sx, sy, x1, y1, x2, y2) <= _ON_WALL_TOL:
+            if min(x1, x2) - tol > sx: continue
+            if max(x1, x2) + tol < sx: continue
+            if min(y1, y2) - tol > sy: continue
+            if max(y1, y2) + tol < sy: continue
+            if _point_to_segment_distance(sx, sy, x1, y1, x2, y2) <= tol:
                 s.orientation = "horizontal"
                 break
 

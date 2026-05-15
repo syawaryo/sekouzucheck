@@ -10,8 +10,8 @@ import type { UniversalEntity } from "../api";
 type LayerKey =
   // categories
   | "grid"           // 通り芯
-  | "outerWall"      // 外壁
-  | "wall"           // 内壁
+  | "kutaiheki"      // 躯体壁 (RC/PCa) — is_exterior で外周強調
+  | "kanshikiheki"   // 乾式壁 (ALC/LGS/CB等)
   | "firewall"       // 耐火壁・防火区画
   | "column"         // 柱・仕上線
   | "beam"           // 梁
@@ -306,9 +306,13 @@ const StaticLayers = memo(function StaticLayers({
   floorData, lowerFloorData, layers, dataBounds, flColorMap,
   universalEntities, layerCategories,
 }: StaticLayersProps) {
-  // Pre-compute outer-wall classification once (regex in render loop is wasteful).
+  // Pre-compute outer-wall classification once. is_exterior is set by the
+  // parser via slab-outline proximity (see WallLine.is_exterior). Legacy
+  // string fallbacks handle data parsed before the material refactor.
   const wallIsOuter = useMemo(
-    () => floorData.wall_lines.map(w => w.wall_type === "外壁" || /外壁/.test(w.layer)),
+    () => floorData.wall_lines.map(w =>
+      Boolean((w as { is_exterior?: boolean }).is_exterior) || /外壁/.test(w.layer)
+    ),
     [floorData.wall_lines]
   );
 
@@ -486,18 +490,21 @@ const StaticLayers = memo(function StaticLayers({
           isn't blank during the initial fetch. */}
       {universalEntities && layerCategories ? (
         <>
-          {layers.outerWall && renderRawEntitiesByCategory(
-            universalEntities, layerCategories, "外壁",
+          {/* 躯体壁 (RC/PCa構造壁) — 太黒線。is_exterior は parser 側で
+              スラブ外形との距離から判定済みで、ここでは material 軸で
+              描画する。外周強調は typed フォールバック側で対応。 */}
+          {layers.kutaiheki && renderRawEntitiesByCategory(
+            universalEntities, layerCategories, "躯体壁",
             { stroke: "#111827", strokeWidth: 55, strokeOpacity: 1.0 },
-            "ow-raw",
+            "kt-raw",
           )}
-          {layers.wall && renderRawEntitiesByCategory(
-            universalEntities, layerCategories, "内壁",
+          {/* 乾式壁 (ALC/LGS/CB等) — 細グレー線 */}
+          {layers.kanshikiheki && renderRawEntitiesByCategory(
+            universalEntities, layerCategories, "乾式壁",
             { stroke: "#64748b", strokeWidth: 25, strokeOpacity: 1.0 },
-            "iw-raw",
+            "kn-raw",
           )}
-          {/* 耐火壁・防火区画 — 個別トグル (firewall)。視覚的に
-              区画線として識別できるよう赤系破線で重ねる。 */}
+          {/* 耐火壁・防火区画 — 区画線として識別できるよう赤系破線。 */}
           {layers.firewall && renderRawEntitiesByCategory(
             universalEntities, layerCategories, "耐火壁・防火区画",
             { stroke: "#b91c1c", strokeWidth: 30, strokeOpacity: 0.9, strokeDasharray: "300 150" },
@@ -507,7 +514,11 @@ const StaticLayers = memo(function StaticLayers({
       ) : (
         floorData.wall_lines.map((w, i) => {
           const isOuter = wallIsOuter[i];
-          const visible = isOuter ? layers.outerWall : layers.wall;
+          // is_exterior でも 内部RC でも 躯体壁 トグルに紐付ける。
+          // 乾式壁トグルは ALC/LGS 等の専用レイヤーが parser で同カテゴリ
+          // に振られるが、typed フォールバックでは material 区別が薄いので
+          // 躯体壁トグルでまとめて on/off する。
+          const visible = layers.kutaiheki;
           if (!visible) return null;
           return (
             <line key={`w${i}`} x1={w.start[0]} y1={w.start[1]} x2={w.end[0]} y2={w.end[1]}
@@ -1062,8 +1073,8 @@ function DrawingViewInner({
   // mentally aligned.
   const LAYER_ITEMS: [LayerKey, string][] = [
     ["grid", "通り芯"],
-    ["outerWall", "外壁"],
-    ["wall", "内壁"],
+    ["kutaiheki", "躯体壁"],
+    ["kanshikiheki", "乾式壁"],
     ["firewall", "耐火壁・区画"],
     ["column", "柱・仕上線"],
     ["beam", "梁"],

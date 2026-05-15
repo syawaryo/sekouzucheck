@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useRef, useEffect } from "react";
 import type { FloorData } from "../types";
 import type { UniversalEntity } from "../api";
 import { useUniversalEntities } from "../useUniversalEntities";
@@ -6,6 +6,11 @@ import { useUniversalEntities } from "../useUniversalEntities";
 interface Props {
   floorData: FloorData;
   floorId: string | null;
+  // Manual category overrides for this floor: { [layerName]: category }.
+  // The map is merged on top of the API-supplied auto classification so
+  // the user can correct misclassifications without re-running anything.
+  layerOverrides: Record<string, string>;
+  onCategoryChange: (layer: string, category: string | null) => void;
   onNavigate: (coords: [number, number], sleeveId?: string | null) => void;
 }
 
@@ -17,7 +22,8 @@ interface Props {
 interface LayerRow {
   id: string;             // unique key for React
   rawLayer: string;       // DXF layer name
-  groupName: string;      // LLM category
+  groupName: string;      // effective category (auto or overridden)
+  overridden: boolean;    // user manually moved this layer's category
   totalCount: number;     // entities on this layer
   typeCounts: Record<string, number>;  // {LINE: 263, CIRCLE: 3}
   uniqueTexts: string[];  // up to 8 unique TEXT/MTEXT values for the preview
@@ -37,8 +43,8 @@ const GROUP_ORDER = [
   "図面ヘッダー",
   // 躯体・建築
   "通り芯",
-  "外壁",
-  "内壁",
+  "躯体壁",
+  "乾式壁",
   "耐火壁・防火区画",
   "柱・仕上線",
   "梁",
@@ -77,6 +83,8 @@ const DISPLAY_LABEL: Record<string, string> = {
   機器コード_衛生: "機器コード（衛生）",
   機器コード_空調: "機器コード（空調）",
   機器コード_電気: "機器コード（電気）",
+  "躯体壁": "躯体壁 (RC/PCa)",
+  "乾式壁": "乾式壁 (ALC/LGS/CB等)",
   "耐火壁・防火区画": "耐火壁・防火区画",
 };
 
@@ -96,6 +104,7 @@ function displayName(group: string): string {
 function buildLayerRow(
   layer: string,
   category: string,
+  overridden: boolean,
   entities: UniversalEntity[],
   sleeveByPos: Map<string, ReturnType<typeof sleeveSummary>>,
 ): LayerRow {
@@ -154,6 +163,7 @@ function buildLayerRow(
     id: `layer:${layer}`,
     rawLayer: layer,
     groupName: category,
+    overridden,
     totalCount: entities.length,
     typeCounts,
     uniqueTexts: uniqueTexts.slice(0, 8),
@@ -165,20 +175,22 @@ function buildLayerRow(
 }
 
 function sleeveSummary(s: FloorData["sleeves"][number]) {
-  // Display rule:
-  //   round           → φ<diameter>           (e.g. φ250)
-  //   rect            → □<width>×<height>    (e.g. □600×250)
-  //   horizontal +     prepend "横" prefix    (e.g. 横φ250 / 横□600×250)
-  //
-  // The previous implementation forced `横φ` for every horizontal sleeve
-  // regardless of shape, which collapsed rect-horizontal openings (cable
-  // racks etc.) down to a meaningless single diameter — a 600×250 cable
-  // rack opening ended up rendered as "横φ250".
+  // Format follows the LABEL, not the drawn shape:
+  //   round-pipe label (φXXX / XXXA / 外径XXX) → φ<diameter>
+  //   no round-pipe label                       → □<width>×<height>
+  //   horizontal sleeves prepend "横".
+  // A rect-drawn horizontal sleeve with a φ label is a round pipe through
+  // a wall (drawn as side-view rect) — show φ. A rect-drawn sleeve without
+  // a φ label is a real rectangular opening (cable rack / box) — show □W×H.
   const isHorizontal = s.orientation === "horizontal";
   const isRect = s.shape === "rect";
-  const dims = isRect && s.width && s.height
-    ? `□${Math.round(s.width)}×${Math.round(s.height)}`
-    : `φ${Math.round(s.diameter)}`;
+  const labelCombined = `${s.label_text || ""} ${s.diameter_text || ""}`;
+  const hasRoundPipeLabel = /(?:[φΦ]\s*\d+|\d+\s*[φΦ]|\d+\s*A\b|外径\s*\d+)/i.test(labelCombined);
+  const dims = hasRoundPipeLabel
+    ? `φ${Math.round(s.diameter)}`
+    : (isRect && s.width && s.height
+        ? `□${Math.round(s.width)}×${Math.round(s.height)}`
+        : `φ${Math.round(s.diameter)}`);
   const size = isHorizontal ? `横${dims}` : dims;
   const props = [
     size,
@@ -203,14 +215,123 @@ function sleeveDisciplineCategory(discipline: string, layer: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Category picker popover — opens from the "移動 ▾" button on each layer
+// row. Lists every GROUP_ORDER bucket (including 不要) plus an "自動分類"
+// reset entry when the row currently carries a manual override.
+// ---------------------------------------------------------------------------
+
+function CategoryPicker({
+  currentCategory, overridden, onPick, onReset, onClose,
+}: {
+  currentCategory: string;
+  overridden: boolean;
+  onPick: (category: string) => void;
+  onReset: () => void;
+  onClose: () => void;
+}) {
+  // Close on outside click — attach once and tear down on unmount.
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const handler = (ev: MouseEvent) => {
+      if (ref.current && !ref.current.contains(ev.target as Node)) {
+        onClose();
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [onClose]);
+
+  // 図面ヘッダー is a UI-only pseudo-category — not a valid bucket.
+  const options = GROUP_ORDER.filter((c) => c !== "図面ヘッダー");
+
+  return (
+    <div
+      ref={ref}
+      style={{
+        position: "absolute",
+        top: "calc(100% + 4px)",
+        right: 0,
+        zIndex: 50,
+        background: "#fff",
+        border: "1px solid #e5e7eb",
+        borderRadius: 6,
+        boxShadow: "0 6px 24px rgba(0,0,0,0.12)",
+        minWidth: 180,
+        maxHeight: 320,
+        overflowY: "auto",
+        padding: 4,
+      }}
+    >
+      {overridden && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onReset(); }}
+          style={{
+            display: "block",
+            width: "100%",
+            textAlign: "left",
+            padding: "5px 10px",
+            fontSize: 11,
+            border: "none",
+            background: "transparent",
+            color: "#b45309",
+            cursor: "pointer",
+            borderRadius: 4,
+            borderBottom: "1px solid #f3f4f6",
+            marginBottom: 2,
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.background = "#fef3c7")}
+          onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+        >
+          ← 自動分類に戻す
+        </button>
+      )}
+      {options.map((cat) => {
+        const isCurrent = cat === currentCategory;
+        return (
+          <button
+            key={cat}
+            onClick={(e) => { e.stopPropagation(); onPick(cat); }}
+            style={{
+              display: "block",
+              width: "100%",
+              textAlign: "left",
+              padding: "5px 10px",
+              fontSize: 11,
+              border: "none",
+              background: isCurrent ? "#f3f4f6" : "transparent",
+              color: isCurrent ? "#111827" : "#374151",
+              cursor: "pointer",
+              borderRadius: 4,
+              fontWeight: isCurrent ? 600 : 400,
+            }}
+            onMouseEnter={(e) => {
+              if (!isCurrent) e.currentTarget.style.background = "#fafafa";
+            }}
+            onMouseLeave={(e) => {
+              if (!isCurrent) e.currentTarget.style.background = "transparent";
+            }}
+          >
+            {displayName(cat)}{isCurrent ? "  ✓" : ""}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-export default function DataExplorer({ floorData, floorId, onNavigate }: Props) {
+export default function DataExplorer({
+  floorData, floorId, layerOverrides, onCategoryChange, onNavigate,
+}: Props) {
   const { data: universal, loading } = useUniversalEntities(floorId);
   const [query, setQuery] = useState("");
   const [openGroups, setOpenGroups] = useState<Set<string>>(new Set());
   const [showHidden, setShowHidden] = useState(false);
+  // Which layer's category-picker popover is open. `null` = none.
+  const [pickerLayer, setPickerLayer] = useState<string | null>(null);
 
   // Sleeve lookup by rounded coordinate so we can swap raw labels for
   // the discipline-aware sleeve summary.
@@ -269,16 +390,24 @@ export default function DataExplorer({ floorData, floorId, onNavigate }: Props) 
     // Group entities by (category, layer).  The category is per-entity,
     // not per-layer, because sleeve INSERTs/CIRCLEs can override into
     // their discipline-specific category even when the layer LLM-classified
-    // differently.
+    // differently. A user-supplied override outranks both — when present,
+    // every entity on that layer lands in the chosen bucket regardless of
+    // its type / sleeve-discipline routing.
     const grouped = new Map<string, UniversalEntity[]>();   // key = "<cat>\x1f<layer>"
     const SEP = "\x1f";
     for (const e of universal.entities) {
       // Skip children folded into a parent INSERT row.
       if (e.props && e.props.parent_handle) continue;
-      const baseCat = cats[e.layer] || "不要";
-      const posKey = e.pos ? `${Math.round(e.pos[0])},${Math.round(e.pos[1])}` : "";
-      const sleeveCat = sleeveDisciplineByPos.get(posKey);
-      const cat = sleeveCat && (e.type === "INSERT" || e.type === "CIRCLE") ? sleeveCat : baseCat;
+      const manual = layerOverrides[e.layer];
+      let cat: string;
+      if (manual) {
+        cat = manual;
+      } else {
+        const baseCat = cats[e.layer] || "不要";
+        const posKey = e.pos ? `${Math.round(e.pos[0])},${Math.round(e.pos[1])}` : "";
+        const sleeveCat = sleeveDisciplineByPos.get(posKey);
+        cat = sleeveCat && (e.type === "INSERT" || e.type === "CIRCLE") ? sleeveCat : baseCat;
+      }
       const key = `${cat}${SEP}${e.layer}`;
       let bucket = grouped.get(key);
       if (!bucket) { bucket = []; grouped.set(key, bucket); }
@@ -290,10 +419,11 @@ export default function DataExplorer({ floorData, floorId, onNavigate }: Props) 
       const sep = key.indexOf(SEP);
       const cat = key.slice(0, sep);
       const layer = key.slice(sep + 1);
-      rows.push(buildLayerRow(layer, cat, ents, sleeveByPos));
+      const overridden = layerOverrides[layer] !== undefined;
+      rows.push(buildLayerRow(layer, cat, overridden, ents, sleeveByPos));
     }
     return rows;
-  }, [universal, sleeveByPos, sleeveDisciplineByPos]);
+  }, [universal, sleeveByPos, sleeveDisciplineByPos, layerOverrides]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -531,6 +661,7 @@ export default function DataExplorer({ floorData, floorId, onNavigate }: Props) 
                       ? r.uniqueTexts.join(" / ")
                           + (r.uniqueTextTotal > r.uniqueTexts.length ? ` …+${r.uniqueTextTotal - r.uniqueTexts.length}種` : "")
                       : "";
+                    const isPickerOpen = pickerLayer === r.rawLayer;
                     return (
                       <div
                         key={r.id}
@@ -544,6 +675,7 @@ export default function DataExplorer({ floorData, floorId, onNavigate }: Props) 
                           fontSize: 12,
                           borderRadius: 4,
                           transition: "background 80ms",
+                          position: "relative",
                         }}
                         onMouseEnter={(e) => (e.currentTarget.style.background = "#fafafa")}
                         onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
@@ -557,8 +689,33 @@ export default function DataExplorer({ floorData, floorId, onNavigate }: Props) 
                           overflowWrap: "anywhere",
                           fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
                           fontSize: 11,
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 2,
                         }}>
-                          {r.rawLayer}
+                          <span>{r.rawLayer}</span>
+                          {r.overridden && (
+                            <span
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onCategoryChange(r.rawLayer, null);
+                              }}
+                              style={{
+                                fontSize: 9,
+                                color: "#b45309",
+                                background: "#fef3c7",
+                                padding: "1px 6px",
+                                borderRadius: 3,
+                                fontFamily: "'Inter','Noto Sans JP',sans-serif",
+                                fontWeight: 500,
+                                cursor: "pointer",
+                                alignSelf: "flex-start",
+                              }}
+                              title="自動分類に戻す"
+                            >
+                              手動 ✕
+                            </span>
+                          )}
                         </span>
                         <span style={{
                           color: "#111827",
@@ -591,6 +748,45 @@ export default function DataExplorer({ floorData, floorId, onNavigate }: Props) 
                             }}>
                               {sampleStr}
                             </span>
+                          )}
+                        </div>
+                        <div
+                          onClick={(e) => e.stopPropagation()}
+                          style={{ position: "relative", flexShrink: 0 }}
+                        >
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setPickerLayer(isPickerOpen ? null : r.rawLayer);
+                            }}
+                            style={{
+                              border: "1px solid #e5e7eb",
+                              background: isPickerOpen ? "#f3f4f6" : "#fff",
+                              color: "#6b7280",
+                              borderRadius: 4,
+                              padding: "2px 8px",
+                              fontSize: 10,
+                              cursor: "pointer",
+                              whiteSpace: "nowrap",
+                            }}
+                            title="カテゴリーを変更"
+                          >
+                            移動 ▾
+                          </button>
+                          {isPickerOpen && (
+                            <CategoryPicker
+                              currentCategory={r.groupName}
+                              overridden={r.overridden}
+                              onPick={(cat) => {
+                                onCategoryChange(r.rawLayer, cat);
+                                setPickerLayer(null);
+                              }}
+                              onReset={() => {
+                                onCategoryChange(r.rawLayer, null);
+                                setPickerLayer(null);
+                              }}
+                              onClose={() => setPickerLayer(null)}
+                            />
                           )}
                         </div>
                       </div>

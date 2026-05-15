@@ -26,40 +26,18 @@ from .universal_parser import FlatEntity
 
 # Categories that should feed into wall_lines. Stays in sync with the
 # layer_classifier.USEFUL_CATEGORIES naming.
-WALL_CATEGORIES = {"内壁", "外壁", "耐火壁・防火区画"}
+WALL_CATEGORIES = {"躯体壁", "乾式壁", "耐火壁・防火区画"}
 
 
-def _wall_type_from_layer(layer_name: str) -> str:
+def _wall_material_from_layer(layer_name: str) -> str:
     """Sub-attribute: derive wall material from layer name.
 
-    Same regex table as parser.py's `_wall_type` — kept here because
-    material is information the LLM category alone doesn't carry, but
-    the layer name still does. When this adapter replaces parser.py,
-    this helper moves with it.
+    Delegates to parser._wall_material to keep classification logic in
+    one place. Re-exported here because category_adapter is a POC for
+    moving wall extraction off parser.py.
     """
-    if "外壁" in layer_name:
-        return "外壁"
-    if "壁心" in layer_name or "C151" in layer_name:
-        return "壁心"
-    if "RC壁" in layer_name or "F105" in layer_name or "F106" in layer_name:
-        return "RC壁"
-    if "A421" in layer_name and "ＲＣ" in layer_name:
-        return "RC壁"
-    if "仕上" in layer_name or "A521" in layer_name:
-        return "仕上"
-    if "ＡＬＣ" in layer_name or "ALC" in layer_name or "A422" in layer_name:
-        return "ALC"
-    if "PCa" in layer_name or "A423" in layer_name:
-        return "PCa"
-    if "パネル" in layer_name or "A424" in layer_name:
-        return "パネル"
-    if "A441" in layer_name or "ＬＧＳ" in layer_name:
-        return "LGS"
-    if "ＣＢ" in layer_name or "A443" in layer_name:
-        return "CB"
-    if "耐火被覆" in layer_name or "A561" in layer_name or "耐火壁" in layer_name:
-        return "耐火被覆"
-    return "不明"
+    from .parser import _wall_material
+    return _wall_material(layer_name)
 
 
 def extract_walls(
@@ -100,7 +78,13 @@ def extract_walls(
         if layer_categories.get(layer) not in WALL_CATEGORIES:
             continue
 
-        wtype = _wall_type_from_layer(layer)
+        material = _wall_material_from_layer(layer)
+
+        def _w(sx, sy, ex, ey):
+            return WallLine(
+                start=(sx, sy), end=(ex, ey),
+                layer=layer, wall_type=material, material=material,
+            )
 
         if t == "LINE":
             start = props.get("start")
@@ -111,7 +95,7 @@ def extract_walls(
             ex, ey = float(end[0]), float(end[1])
             if bbox_check and not bbox_check(sx, sy, ex, ey):
                 continue
-            out.append(WallLine(start=(sx, sy), end=(ex, ey), layer=layer, wall_type=wtype))
+            out.append(_w(sx, sy, ex, ey))
 
         elif t in ("LWPOLYLINE", "POLYLINE"):
             verts = props.get("vertices") or []
@@ -123,11 +107,11 @@ def extract_walls(
                 ex, ey = float(verts[i + 1][0]), float(verts[i + 1][1])
                 if bbox_check and not bbox_check(sx, sy, ex, ey):
                     continue
-                out.append(WallLine(start=(sx, sy), end=(ex, ey), layer=layer, wall_type=wtype))
+                out.append(_w(sx, sy, ex, ey))
             if closed:
                 sx, sy = float(verts[-1][0]), float(verts[-1][1])
                 ex, ey = float(verts[0][0]), float(verts[0][1])
                 if not (bbox_check and not bbox_check(sx, sy, ex, ey)):
-                    out.append(WallLine(start=(sx, sy), end=(ex, ey), layer=layer, wall_type=wtype))
+                    out.append(_w(sx, sy, ex, ey))
 
     return out

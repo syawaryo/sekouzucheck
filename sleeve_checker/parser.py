@@ -277,24 +277,32 @@ def _infer_orientation_from_walls(
     # wall can be 500-700mm from any single drawn line. Bumped to 600mm
     # after a user reported edge-of-building horizontal pipes still
     # rendering as round-vertical at 400mm tolerance.
-    _TOL_BY_TYPE: dict[str, float] = {
-        "外壁": 600.0,        # 既存躯体外壁 / RC 外壁 + 内外仕上
-        "RC壁": 400.0,        # F105/F106 RC壁 + 仕上 + 取付ピッチ
-        "ALC": 300.0,
-        "PCa": 400.0,
+    # Material-axis tolerance table. Exterior walls get +200mm via the
+    # _EXTERIOR_BOOST below to cover outer finish / insulation thickness.
+    _TOL_BY_MATERIAL: dict[str, float] = {
+        "RC":   400.0,        # F105/F106 RC壁 + 仕上 + 取付ピッチ
+        "ALC":  300.0,
+        "PCa":  400.0,
         "パネル": 200.0,
-        "LGS": 200.0,
-        "CB": 250.0,
-        # 壁心 (C151) は中心線。配管立上りは中心線の左右どちらかに
-        # オフセットして描かれる (壁芯から ±300〜400mm) — 給排水
-        # ライザーは「壁心の側」に寄せて配置されるのが慣習なので
-        # 500mm まで広げないと拾い損ねる。
-        "壁心": 500.0,
+        "LGS":  200.0,
+        "CB":   250.0,
+        "木軸": 200.0,
         "仕上": 150.0,
         "耐火被覆": 150.0,
+        # 壁心 (C151) — pipe risers sit ±300-400mm off the centerline
+        # by convention; 500mm catches wall-adjacent risers.
+        "壁心": 500.0,
         "不明": 300.0,
     }
+    _EXTERIOR_BOOST = 200.0
     _DEFAULT_TOL = 300.0
+
+    def _wall_tol(w: WallLine) -> float:
+        mat = getattr(w, "material", None) or w.wall_type
+        base = _TOL_BY_MATERIAL.get(mat, _DEFAULT_TOL)
+        if getattr(w, "is_exterior", False):
+            base += _EXTERIOR_BOOST
+        return base
 
     # Pipe-flow labels — these are horizontal-run pipes (drainage, water
     # supply, gas) by construction. Even when their distance to the wall
@@ -323,7 +331,7 @@ def _infer_orientation_from_walls(
         # boost (×2). They're almost always horizontal runs through walls.
         is_flow = _is_pipe_flow(s.label_text)
         for w in wall_lines:
-            base_tol = _TOL_BY_TYPE.get(w.wall_type, _DEFAULT_TOL)
+            base_tol = _wall_tol(w)
             tol = base_tol * 2 if is_flow else base_tol
             x1, y1 = w.start
             x2, y2 = w.end

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 import ezdxf
 
+from .geometry import wall_midpoint_near_outline
 from .models import (
     BeamLine,
     ColumnLine,
@@ -109,25 +110,24 @@ def _classify_sleeve_type(
 
 
 # Matches pipe-diameter notation like "φ124", "Φ200", "125φ", "125A".
-# These denote a ROUND pipe, so the sleeve is a round hole regardless of
-# how the block geometry is drawn (hatched rectangle is common).
+# A rect-shape sleeve with this label is a horizontal round pipe through a
+# wall — the drawing stays rect (that's how it was drafted), but the UI's
+# size text uses φ from the label.
 _RE_ROUND_LABEL = re.compile(
     r"(?:[φΦ]\s*\d+|\d+\s*[φΦ]|\d+\s*A\b|外径\s*\d+)", re.IGNORECASE
 )
 
 
 def _refine_sleeve_shape_from_label(sleeve: Sleeve) -> None:
-    """If the attached label indicates a round pipe (φXXX / XXXA / 外径XXX),
-    override shape to "round".
+    """A rect-shape sleeve carrying a round-pipe label (φXXX / XXXA / 外径XXX)
+    is a horizontal round pipe passing through a wall — drawn as a rectangle
+    in plan because the drafter is showing the pipe length along the wall.
 
-    This corrects a common DXF drawing convention: round pipe sleeves are
-    sometimes drawn as a hatched rectangle in plan view (no CIRCLE entity
-    inside the block), which our geometry pass tags as "rect". The label
-    text is a more authoritative signal than the hatching rectangle.
-
-    EXCEPTION: blocks named 箱 (= "box") are angular sleeves by construction.
-    The round pipe that passes THROUGH a box sleeve doesn't make the hole
-    round — the hole is a rectangle sized for the box. Keep rect.
+    The DRAWING is rectangular (that's what the drafter put there, that's what
+    the UI renders), but the LABEL says the pipe is round so the size text
+    should be φX not W×H. Display logic separates these concerns; here we
+    only set orientation=horizontal so the size-text branch in the frontend
+    can pick the right format.
     """
     if sleeve.shape == "round":
         return
@@ -137,21 +137,12 @@ def _refine_sleeve_shape_from_label(sleeve: Sleeve) -> None:
     dt = sleeve.diameter_text or ""
     combined = f"{lt} {dt}"
     if _RE_ROUND_LABEL.search(combined):
-        # Before collapsing geometry, capture the orientation clue: a round
-        # pipe drawn with a highly-elongated rectangular hatching in plan is
-        # almost certainly a horizontal pipe slot through a wall.
         w0 = sleeve.width or sleeve.diameter
         h0 = sleeve.height or sleeve.diameter
         if w0 > 0 and h0 > 0:
             aspect = max(w0, h0) / min(w0, h0)
             if aspect >= _ASPECT_HORIZONTAL_MIN:
                 sleeve.orientation = "horizontal"
-        sleeve.shape = "round"
-        # Collapse width/height to the short side so it renders as a circle
-        # sized by the real pipe diameter, not the hatching rectangle.
-        if sleeve.diameter > 0:
-            sleeve.width = sleeve.diameter
-            sleeve.height = sleeve.diameter
 
 
 # Aspect-ratio thresholds for DXF orientation heuristic.
@@ -876,7 +867,49 @@ def _extract_grid_lines(doc, msp) -> list[GridLine]:
 # Wall line extraction
 # ---------------------------------------------------------------------------
 
-def _extract_wall_lines(doc, msp) -> list[WallLine]:
+def _wall_material(layer_name: str) -> str:
+    """Map a wall layer name to its construction material.
+
+    Materials (RC/ALC/LGS/etc) ARE layer-derivable because drafters separate
+    materials into distinct layers (different physical properties, different
+    drawing line weights). What is NOT layer-derivable is whether the wall
+    is on the building perimeter — that is computed geometrically via
+    ``wall_midpoint_near_outline`` and stored on ``WallLine.is_exterior``.
+
+    Returns one of:
+    RC / ALC / LGS / PCa / パネル / CB / 木軸 / 仕上 / 耐火被覆 / 壁心 / 不明
+    """
+    if "壁心" in layer_name or "壁芯" in layer_name or "C151" in layer_name:
+        return "壁心"
+    if "仕上" in layer_name or "A521" in layer_name:
+        return "仕上"
+    if "耐火被覆" in layer_name or "A561" in layer_name:
+        return "耐火被覆"
+    if "ＡＬＣ" in layer_name or "ALC" in layer_name or "A422" in layer_name:
+        return "ALC"
+    if "PCa" in layer_name or "A423" in layer_name:
+        return "PCa"
+    if "パネル" in layer_name or "A424" in layer_name:
+        return "パネル"
+    if "A441" in layer_name or "ＬＧＳ" in layer_name or "LGS" in layer_name:
+        return "LGS"
+    if "ＣＢ" in layer_name or "A443" in layer_name or "_CB" in layer_name:
+        return "CB"
+    if "木軸" in layer_name or "A442" in layer_name:
+        return "木軸"
+    if (
+        "RC壁" in layer_name
+        or "F105" in layer_name
+        or "F106" in layer_name
+        or "外壁" in layer_name
+        or ("A421" in layer_name and ("ＲＣ" in layer_name or "RC" in layer_name))
+        or layer_name.endswith("]壁")
+    ):
+        return "RC"
+    return "不明"
+
+
+def _extract_wall_lines(doc, msp, slab_outlines: list[SlabOutline] | None = None) -> list[WallLine]:
     """
     Extract wall-related LINEs and LWPOLYLINE segments.
 
@@ -919,53 +952,31 @@ def _extract_wall_lines(doc, msp) -> list[WallLine]:
     ]
     wall_layers = _find_layers_any(doc, wall_keywords)
 
-    def _wall_type(layer_name: str) -> str:
-        # Exterior wall detection takes precedence so "既存躯体外壁" and any
-        # other layer whose name contains 外壁 groups together under "外壁".
-        if "外壁" in layer_name:
-            return "外壁"
-        if "壁心" in layer_name or "C151" in layer_name:
-            return "壁心"
-        if "RC壁" in layer_name or "F105" in layer_name or "F106" in layer_name:
-            return "RC壁"
-        if "A421" in layer_name and "ＲＣ" in layer_name:
-            return "RC壁"
-        if "仕上" in layer_name or "A521" in layer_name:
-            return "仕上"
-        if "ＡＬＣ" in layer_name or "ALC" in layer_name or "A422" in layer_name:
-            return "ALC"
-        if "PCa" in layer_name or "A423" in layer_name:
-            return "PCa"
-        if "パネル" in layer_name or "A424" in layer_name:
-            return "パネル"
-        if "A441" in layer_name or "ＬＧＳ" in layer_name:
-            return "LGS"
-        if "ＣＢ" in layer_name or "A443" in layer_name:
-            return "CB"
-        if "耐火被覆" in layer_name or "A561" in layer_name:
-            return "耐火被覆"
-        return "不明"
-
     wall_lines: list[WallLine] = []
 
     def _wall_in_building(sx: float, sy: float, ex: float, ey: float) -> bool:
         return _segment_in_building_bbox(sx, sy, ex, ey)
+
+    def _make_wall(sx, sy, ex, ey, layer, material):
+        # wall_type kept aligned with material during migration (Task 12 drops it)
+        return WallLine(
+            start=(sx, sy), end=(ex, ey),
+            layer=layer, wall_type=material, material=material,
+        )
 
     for entity in msp:
         layer = entity.dxf.layer
         if layer not in set(wall_layers):
             continue
 
-        wtype = _wall_type(layer)
+        material = _wall_material(layer)
 
         if entity.dxftype() == "LINE":
             sx, sy = entity.dxf.start.x, entity.dxf.start.y
             ex, ey = entity.dxf.end.x, entity.dxf.end.y
             if not _wall_in_building(sx, sy, ex, ey):
                 continue
-            wall_lines.append(
-                WallLine(start=(sx, sy), end=(ex, ey), layer=layer, wall_type=wtype)
-            )
+            wall_lines.append(_make_wall(sx, sy, ex, ey, layer, material))
 
         elif entity.dxftype() == "LWPOLYLINE":
             pts = list(entity.get_points())
@@ -974,17 +985,40 @@ def _extract_wall_lines(doc, msp) -> list[WallLine]:
                 ex, ey = float(pts[i + 1][0]), float(pts[i + 1][1])
                 if not _wall_in_building(sx, sy, ex, ey):
                     continue
-                wall_lines.append(
-                    WallLine(start=(sx, sy), end=(ex, ey), layer=layer, wall_type=wtype)
-                )
+                wall_lines.append(_make_wall(sx, sy, ex, ey, layer, material))
             if entity.is_closed and len(pts) >= 2:
                 sx, sy = float(pts[-1][0]), float(pts[-1][1])
                 ex, ey = float(pts[0][0]), float(pts[0][1])
                 if not _wall_in_building(sx, sy, ex, ey):
                     continue
-                wall_lines.append(
-                    WallLine(start=(sx, sy), end=(ex, ey), layer=layer, wall_type=wtype)
-                )
+                wall_lines.append(_make_wall(sx, sy, ex, ey, layer, material))
+
+    # ---- Exterior detection ----
+    # Combine TWO signals:
+    #   (a) Layer name explicitly says "外壁" — e.g. "★既存躯体外壁" on
+    #       Takenaka existing-renovation drawings. High-confidence shortcut.
+    #   (b) Wall midpoint lies near a slab outline segment. Needed for
+    #       drawings (e.g. 2F new-build) that put exterior walls on the
+    #       generic F106_RC壁 / [建築]壁 layers without an "外壁" label.
+    #
+    # F108_2_RC立上り (slab upturn) traces the slab edge; the wall centerline
+    # sits ~100-400mm inside the upturn (wall thickness + minor offset).
+    # Tolerance 600mm covers RC walls with finishes; tight enough to reject
+    # interior partitions that happen to run parallel to slab edges.
+    outline_segs = [(o.start, o.end) for o in (slab_outlines or [])]
+    for w in wall_lines:
+        # Centerlines are reference geometry, not real wall bodies — skip.
+        if w.material == "壁心":
+            continue
+        # Signal (a): layer-name fast path
+        if "外壁" in w.layer:
+            w.is_exterior = True
+            continue
+        # Signal (b): geometry check, only meaningful when outline is present
+        if outline_segs:
+            w.is_exterior = wall_midpoint_near_outline(
+                w.start, w.end, outline_segs, tolerance=600.0,
+            )
 
     return wall_lines
 
@@ -2324,21 +2358,15 @@ def parse_dxf(filepath: str | Path) -> FloorData:
     sleeves = _extract_sleeves(doc, msp)
 
     grid_lines = _extract_grid_lines(doc, msp)
-    wall_lines = _extract_wall_lines(doc, msp)
+    # Slab outlines extracted BEFORE walls so the wall extractor can use
+    # them to classify is_exterior per segment.
+    slab_outlines = _extract_slab_outlines(doc, msp)
+    wall_lines = _extract_wall_lines(doc, msp, slab_outlines=slab_outlines)
     step_lines = _extract_step_lines(doc, msp)
 
     _attach_label_texts(sleeves, doc, msp, step_lines=step_lines)
     for s in sleeves:
         s.sleeve_type = _classify_sleeve_type(s.label_text, s.discipline)
-        # Reconcile the geometric shape with the φ/外径/XXA label.
-        # DXF convention: a round pipe penetrating a wall is drawn in plan
-        # view as a long thin hatched rectangle (the side projection of
-        # the pipe). The block has no CIRCLE inside, so our geometry pass
-        # tags it `shape=rect`. But its label says "φ216" — which is the
-        # truth: the actual sleeve cross-section is round.
-        # `_refine_sleeve_shape_from_label` rewrites such cases back to
-        # round, while leaving real box openings (block name contains 箱,
-        # or label has no diameter pattern) alone.
         _refine_sleeve_shape_from_label(s)
         s.orientation = _infer_sleeve_orientation(s)
     # Second pass: recover "unknown" sleeves via adjacency / pair detection.
@@ -2353,7 +2381,7 @@ def parse_dxf(filepath: str | Path) -> FloorData:
     _attach_pn_numbers(sleeves, pn_labels, doc=doc, msp=msp)
     slab_zones = _extract_slab_zones(doc, msp)
     slab_zones.extend(_extract_step_labels(doc, msp))
-    slab_outlines = _extract_slab_outlines(doc, msp)
+    # slab_outlines already extracted earlier (before wall_lines)
     slab_labels = _extract_slab_labels(doc, msp)
     slab_level = _extract_slab_level(doc, msp)
     water_gradients = _extract_water_gradients(doc, msp)

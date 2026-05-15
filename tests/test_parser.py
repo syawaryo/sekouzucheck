@@ -10,6 +10,22 @@ from __future__ import annotations
 import pytest
 from pathlib import Path
 
+
+def test_wall_material_classification():
+    from sleeve_checker.parser import _wall_material
+    assert _wall_material("[空調]F106_RC壁_構造体線") == "RC"
+    assert _wall_material("[空調]★既存躯体外壁") == "RC"
+    assert _wall_material("[空調]A422_壁：ＡＬＣ") == "ALC"
+    assert _wall_material("[建築]A441_壁：ＬＧＳ") == "LGS"
+    assert _wall_material("[建築]A423_壁：PCa") == "PCa"
+    assert _wall_material("[建築]A424_壁：パネル") == "パネル"
+    assert _wall_material("[建築]A443_壁：ＣＢ") == "CB"
+    assert _wall_material("[空調]A521_壁：仕上") == "仕上"
+    assert _wall_material("[空調]A561_耐火被覆") == "耐火被覆"
+    assert _wall_material("[空調]C151_壁心") == "壁心"
+    assert _wall_material("[建築]壁") == "RC"
+    assert _wall_material("[unknown]xyz") == "不明"
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -143,6 +159,31 @@ def test_parse_1f_wall_lines(floor_data_1f):
     n = len(floor_data_1f.wall_lines)
     print(f"\n  1F wall lines: {n}")
     assert n > 0, "No wall lines extracted from 1F"
+
+
+def test_parse_1f_wall_is_exterior_set(floor_data_1f):
+    """1F has a dedicated ★既存躯体外壁 layer; geometry-based is_exterior
+    must mark a substantial portion of walls as exterior."""
+    exterior = [w for w in floor_data_1f.wall_lines if w.is_exterior]
+    interior = [w for w in floor_data_1f.wall_lines if not w.is_exterior]
+    print(f"\n  1F exterior walls: {len(exterior)}, interior: {len(interior)}")
+    assert len(exterior) >= 100, f"too few exterior walls: {len(exterior)}"
+    assert len(interior) > 0, "all walls cannot be exterior"
+
+
+def test_parse_2f_walls_have_is_exterior_field(floor_data_2f):
+    """2F walls must all carry the is_exterior field (True or False).
+
+    Note on coverage: 2F's architectural walls live inside INSERT blocks
+    that the current wall extractor doesn't recurse into — that's a
+    separate pre-existing limitation tracked in `universal_parser.py`.
+    For the walls that ARE extracted, the geometry path must run and
+    set is_exterior cleanly (no AttributeError, no None values).
+    """
+    for w in floor_data_2f.wall_lines:
+        assert isinstance(w.is_exterior, bool), (
+            f"is_exterior not set on wall: {w.layer}"
+        )
 
 
 # ---------------------------------------------------------------------------

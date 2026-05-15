@@ -25,7 +25,9 @@ export interface WallLine {
   start: [number, number];
   end: [number, number];
   layer: string;
-  wall_type: string;
+  wall_type: string;                // legacy — keep until backend drops it
+  material?: string;                // RC/ALC/LGS/PCa/CB/木軸/パネル/仕上/耐火被覆/壁心/不明
+  is_exterior?: boolean;            // building perimeter? (geometric)
 }
 
 export interface StepLine {

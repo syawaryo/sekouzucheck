@@ -176,7 +176,10 @@ def _dict_to_floor_data(d: dict) -> FloorData:
         ) for dl in d.get("dim_lines", [])],
         wall_lines=[WallLine(
             start=tuple(w["start"]), end=tuple(w["end"]),
-            layer=w.get("layer", ""), wall_type=w.get("wall_type", ""),
+            layer=w.get("layer", ""),
+            wall_type=w.get("wall_type", w.get("material", "不明")),
+            material=w.get("material", w.get("wall_type", "不明")),
+            is_exterior=bool(w.get("is_exterior", False)),
         ) for w in d.get("wall_lines", [])],
         step_lines=[StepLine(
             start=tuple(s["start"]), end=tuple(s["end"]), layer=s.get("layer", ""),

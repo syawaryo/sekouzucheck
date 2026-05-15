@@ -20,3 +20,21 @@ def test_floor_data_creation():
 def test_check_result_creation():
     cr = CheckResult(check_id=3, check_name="口径・外径記載", severity="NG", message="φ記載なし")
     assert cr.severity == "NG"
+
+
+def test_wall_line_has_material_and_is_exterior():
+    w = WallLine(
+        start=(0.0, 0.0),
+        end=(100.0, 0.0),
+        layer="[空調]F106_RC壁_構造体線",
+        material="RC",
+        is_exterior=True,
+    )
+    assert w.material == "RC"
+    assert w.is_exterior is True
+
+
+def test_wall_line_defaults():
+    w = WallLine(start=(0.0, 0.0), end=(100.0, 0.0))
+    assert w.material == "不明"
+    assert w.is_exterior is False

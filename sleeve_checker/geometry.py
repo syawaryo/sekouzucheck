@@ -74,3 +74,27 @@ def ray_blocked_by_steps(
         if segments_intersect(origin, target, seg_start, seg_end):
             return True
     return False
+
+
+def wall_midpoint_near_outline(
+    wall_start: tuple[float, float],
+    wall_end: tuple[float, float],
+    outline_segments: list[tuple[tuple[float, float], tuple[float, float]]],
+    tolerance: float = 200.0,
+) -> bool:
+    """Return True if the wall segment's midpoint is within *tolerance* of
+    any outline segment.
+
+    Used to classify whether a wall is on the building perimeter (外壁).
+    Outline segments come from slab edge layers (F108_2_RC立上り線 /
+    F108_RC見え掛り線) which trace the building footprint. The architectural
+    convention of NOT separating interior vs exterior walls by layer name
+    forces this geometric check.
+    """
+    if not outline_segments:
+        return False
+    mid = ((wall_start[0] + wall_end[0]) / 2.0, (wall_start[1] + wall_end[1]) / 2.0)
+    for seg_start, seg_end in outline_segments:
+        if point_to_segment_distance(mid, seg_start, seg_end) <= tolerance:
+            return True
+    return False

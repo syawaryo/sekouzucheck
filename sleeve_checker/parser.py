@@ -1009,15 +1009,17 @@ def _extract_wall_lines(doc, msp, slab_outlines: list[SlabOutline] | None = None
     #       drawings (e.g. 2F new-build) that put exterior walls on the
     #       generic F106_RC壁 / [建築]壁 layers without an "外壁" label.
     #
-    # F108_2_RC立上り (slab upturn) traces the slab edge; the wall centerline
-    # sits ~100-400mm inside the upturn (wall thickness + minor offset).
-    # Tolerance 600mm covers RC walls with finishes; tight enough to reject
-    # interior partitions that happen to run parallel to slab edges.
+    # F108_2_RC立上り (slab upturn) traces the slab edge; the wall body /
+    # centerline sits ~100-400mm inside the upturn. Tolerance 600mm covers
+    # RC walls with finishes; tight enough to reject interior partitions
+    # that happen to run parallel to slab edges.
+    #
+    # Centerlines (C151_壁心) PARTICIPATE in this check — they're often the
+    # only wall geometry present (e.g. 2F new-build drawings that omit wall
+    # bodies and rely on centerline + sleeve marks). Skipping them would
+    # erase exterior detection on such sheets.
     outline_segs = [(o.start, o.end) for o in (slab_outlines or [])]
     for w in wall_lines:
-        # Centerlines are reference geometry, not real wall bodies — skip.
-        if w.material == "壁心":
-            continue
         # Signal (a): layer-name fast path
         if "外壁" in w.layer:
             w.is_exterior = True

@@ -1,8 +1,78 @@
-import type { Sleeve, CheckResult } from "../types";
+import type { Sleeve, CheckResult, SlabLabel } from "../types";
 
 interface Props {
   sleeve: Sleeve;
   results: CheckResult[];
+  slabLabels?: SlabLabel[];
+}
+
+// Parse sleeve FL annotation like "FL+40", "FL-360", "FL±0" into an integer mm.
+function parseFlValue(flText: string | null | undefined): number | null {
+  if (!flText) return null;
+  const m = flText.match(/FL\s*([±+\-])?\s*(\d+)/i);
+  if (!m) return null;
+  const sign = m[1] || "+";
+  const n = parseInt(m[2], 10);
+  if (sign === "-") return -n;
+  if (sign === "±") return 0;
+  return n;
+}
+
+// Parse SlabLabel.level. Returns [low, high] mm range — single-value labels
+// like "-60" return [-60, -60]; sloped labels like "-545～-600" return the
+// proper range. null means unparseable (e.g. empty).
+function parseSlabLevel(level: string): [number, number] | null {
+  if (!level) return null;
+  const range = level.match(/^([+\-])?\s*(\d+)\s*[～~〜]\s*([+\-])?\s*(\d+)$/);
+  if (range) {
+    const a = (range[1] === "-" ? -1 : 1) * parseInt(range[2], 10);
+    const b = (range[3] === "-" ? -1 : 1) * parseInt(range[4], 10);
+    return [Math.min(a, b), Math.max(a, b)];
+  }
+  const single = level.match(/^([+\-])?\s*(\d+)$/);
+  if (single) {
+    const v = (single[1] === "-" ? -1 : 1) * parseInt(single[2], 10);
+    return [v, v];
+  }
+  return null;
+}
+
+function nearestSlabLabel(sleeve: Sleeve, slabLabels: SlabLabel[]): SlabLabel | null {
+  if (!slabLabels.length) return null;
+  const [sx, sy] = sleeve.center;
+  let best: SlabLabel | null = null;
+  let bestD = Infinity;
+  for (const sl of slabLabels) {
+    const dx = sl.x - sx;
+    const dy = sl.y - sy;
+    const d = dx * dx + dy * dy;
+    if (d < bestD) { bestD = d; best = sl; }
+  }
+  return best;
+}
+
+function formatOffset(prefix: string, value: number): string {
+  if (value === 0) return `${prefix}±0`;
+  return `${prefix}${value > 0 ? "+" : ""}${value}`;
+}
+
+// Compute the sleeve height relative to the nearest slab's top surface.
+// Returns the display string ("SL+100", "SL+625～+685") or null if it can't
+// be computed (missing FL on the sleeve, or no parseable slab nearby).
+function computeSlabTopText(sleeve: Sleeve, slabLabels: SlabLabel[]): string | null {
+  const flValue = parseFlValue(sleeve.fl_text);
+  if (flValue === null) return null;
+  const slab = nearestSlabLabel(sleeve, slabLabels);
+  if (!slab) return null;
+  const lvl = parseSlabLevel(slab.level);
+  if (!lvl) return null;
+  const [lo, hi] = lvl;
+  if (lo === hi) return formatOffset("SL", flValue - lo);
+  // Sloped slab: present as a range. The smaller slab-top level (more
+  // negative) yields the larger sleeve-above-slab offset, so swap ends.
+  const a = flValue - hi;
+  const b = flValue - lo;
+  return `SL${a >= 0 ? "+" : ""}${a}～${b >= 0 ? "+" : ""}${b}`;
 }
 
 function renderResultCard(r: CheckResult, prefix: string, i: number) {
@@ -40,7 +110,7 @@ function renderResultCard(r: CheckResult, prefix: string, i: number) {
   );
 }
 
-export default function SleeveInfo({ sleeve, results }: Props) {
+export default function SleeveInfo({ sleeve, results, slabLabels = [] }: Props) {
   const sleeveResults = results.filter((r) => r.sleeve_id === sleeve.id);
   const ngResults = sleeveResults.filter((r) => r.severity === "NG");
   const warnResults = sleeveResults.filter((r) => r.severity === "WARNING");
@@ -57,18 +127,23 @@ export default function SleeveInfo({ sleeve, results }: Props) {
   const typeLabel = sleeve.sleeve_type ? SLEEVE_TYPE_LABEL[sleeve.sleeve_type] : null;
   const isHorizontal = sleeve.orientation === "horizontal";
   const isRect = sleeve.shape === "rect";
-  // Display rule (consistent with DataExplorer.sleeveSummary):
-  //   round   → φ<diameter>
-  //   rect    → <width>×<height>
-  //   horizontal sleeves prepend "横".
-  // Horizontal round = pipe penetration (only bore is meaningful).
-  // Horizontal rect = rectangular wall opening — cable rack / duct passage.
-  // Earlier this branch forced φ-only on every horizontal sleeve, which
-  // mis-displayed e.g. a 600×250 cable rack opening as "横 φ250".
+  // Display rule:
+  //   round-pipe label (φXXX / XXXA / 外径XXX) → size as φ<diameter>
+  //   no round-pipe label                       → size as W×H
+  //   "横" prefix for horizontal, else "角" for rect / "丸" for round
+  // Distinguishing the two rect cases by LABEL, not by shape:
+  //   - horizontal round pipe drawn as long rect with φ label → "横 φX"
+  //   - cable-rack / box opening drawn as rect, no φ label    → "横 W×H"
+  const labelCombined = `${sleeve.label_text || ""} ${sleeve.diameter_text || ""}`;
+  const hasRoundPipeLabel = /(?:[φΦ]\s*\d+|\d+\s*[φΦ]|\d+\s*A\b|外径\s*\d+)/i.test(labelCombined);
   const shapeLabel = isHorizontal ? "横" : (isRect ? "角" : "丸");
-  const sizeText = isRect && sleeve.width && sleeve.height
-    ? `${shapeLabel} ${Math.round(sleeve.width)}×${Math.round(sleeve.height)}mm`
-    : `${shapeLabel} φ${Math.round(sleeve.diameter)}mm`;
+  const sizeText = hasRoundPipeLabel
+    ? `${shapeLabel} φ${Math.round(sleeve.diameter)}mm`
+    : (isRect && sleeve.width && sleeve.height
+        ? `${shapeLabel} ${Math.round(sleeve.width)}×${Math.round(sleeve.height)}mm`
+        : `${shapeLabel} φ${Math.round(sleeve.diameter)}mm`);
+
+  const slabTopText = computeSlabTopText(sleeve, slabLabels);
 
   const worst = ngResults.length > 0 ? "NG" : warnResults.length > 0 ? "WARNING" : "OK";
   const badgeStyle: Record<string, { bg: string; color: string }> = {
@@ -95,11 +170,10 @@ export default function SleeveInfo({ sleeve, results }: Props) {
           <div><div style={{ color: "#9ca3af", fontSize: 10, marginBottom: 2 }}>形状/寸法</div><div style={{ color: "#111827", fontWeight: 600 }}>
             {sizeText}
           </div></div>
-          <div><div style={{ color: "#9ca3af", fontSize: 10, marginBottom: 2 }}>FL</div><div style={{ color: "#111827", fontWeight: 600 }}>{sleeve.fl_text || "-"}</div></div>
+          <div><div style={{ color: "#9ca3af", fontSize: 10, marginBottom: 2 }}>スラブ天端</div><div style={{ color: "#111827", fontWeight: 600 }}>{slabTopText || sleeve.fl_text || "-"}</div></div>
           <div><div style={{ color: "#9ca3af", fontSize: 10, marginBottom: 2 }}>種別</div><div style={{ color: "#374151" }}>
             {typeLabel ? `${typeLabel} (${disciplineCode})` : (disciplineCode || "-")}
           </div></div>
-          <div><div style={{ color: "#9ca3af", fontSize: 10, marginBottom: 2 }}>座標</div><div style={{ color: "#374151", fontSize: 11 }}>({sleeve.center[0].toFixed(0)}, {sleeve.center[1].toFixed(0)})</div></div>
         </div>
       </div>
 

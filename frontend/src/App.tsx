@@ -596,7 +596,7 @@ function App() {
             {/* Right sidebar */}
             <div className="no-print" style={{ width: 300, borderLeft: "1px solid #e5e7eb", background: "#fff", overflow: "auto", flexShrink: 0 }}>
               {displaySleeve ? (
-                <SleeveInfo sleeve={displaySleeve} results={results} slabLabels={floorData.slab_labels} />
+                <SleeveInfo sleeve={displaySleeve} results={results} slabLabels={floorData?.slab_labels} />
               ) : (
                 <div style={{ padding: 20, color: "#9ca3af", fontSize: 13, textAlign: "center", marginTop: 40 }}>
                   スリーブにカーソルを合わせると<br />詳細が表示されます

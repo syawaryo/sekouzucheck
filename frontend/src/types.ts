@@ -3,6 +3,7 @@ export interface Sleeve {
   center: [number, number];
   diameter: number;
   label_text: string | null;
+  diameter_text: string | null;
   fl_text: string | null;
   pn_number: string | null;
   layer: string;

@@ -44,7 +44,9 @@ class WallLine:
     start: tuple[float, float]
     end: tuple[float, float]
     layer: str = ""
-    wall_type: str = "不明"
+    wall_type: str = "不明"   # legacy field — kept during migration; remove in Task 12
+    material: str = "不明"    # RC / ALC / LGS / PCa / 木軸 / CB / パネル / 仕上 / 耐火被覆 / 壁心 / 不明
+    is_exterior: bool = False # True when segment lies near slab outline (=外周壁)
 
 
 @dataclass

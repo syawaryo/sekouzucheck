@@ -13,6 +13,8 @@ services:
       --reload-include "*.py"
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       - PYTHONDONTWRITEBYTECODE=1
       - PYTHONUNBUFFERED=1
@@ -25,6 +27,8 @@ services:
       - ./dxf_output:/app/dxf_output
       - ./ifc_output:/app/ifc_output
       - ./.parse_cache:/app/.parse_cache
+      - ./.classifier_cache:/app/.classifier_cache
+      - ./.all_entities_cache:/app/.all_entities_cache
 
   frontend:
     image: node:22-slim

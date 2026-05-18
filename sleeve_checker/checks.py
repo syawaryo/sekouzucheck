@@ -32,13 +32,16 @@ from .models import (
 DRAIN_CODES = ["SD", "RD", "WD", "KD", "CDW", "SPD", "D:", "排水", "汚水", "雨水"]
 
 _DEFAULT_WALL_THICKNESS: dict[str, float] = {
-    "RC": 0,
+    "RC": 0,            # RC = 躯体線 (中心 ≒ 表面) のためオフセット 0
     "LGS": 150,
     "ALC": 150,
     "PCa": 200,
     "パネル": 100,
+    "木軸": 100,
     "CB": 150,
     "耐火被覆": 50,
+    "壁心": 0,           # 中心参照線 — オフセットなし
+    "仕上": 0,           # 仕上線 — 表面なのでオフセットなし
     "不明": 200,
 }
 
@@ -415,23 +418,16 @@ def check_lower_wall(
     results: list[CheckResult] = []
 
     for wall in lower_walls:
-        wtype = wall.wall_type
+        # Prefer .material; fall back to legacy .wall_type for paths that
+        # still construct WallLine without setting material.
+        mat = getattr(wall, "material", None) or wall.wall_type
 
         # Determine threshold
-        if wtype in ("RC壁", "RC", "仕上"):
+        if mat in ("RC", "RC壁", "仕上"):
             # Surface lines (RC structure / wall finish) — sleeve edge to surface
             threshold = sleeve.diameter / 2.0
         else:
-            # Normalize wall type key for lookup
-            tk = wtype
-            if tk not in wall_thickness:
-                # Try stripping Japanese decorators
-                for key in wall_thickness:
-                    if key in wtype:
-                        tk = key
-                        break
-                else:
-                    tk = "不明"
+            tk = mat if mat in wall_thickness else "不明"
             thickness = wall_thickness.get(tk, wall_thickness.get("不明", 200))
             threshold = sleeve.diameter / 2.0 + thickness / 2.0
 
@@ -442,10 +438,10 @@ def check_lower_wall(
                 check_name="下階壁干渉",
                 severity="NG",
                 sleeve=sleeve,
-                message=f"下階壁（{wtype}）との距離 {dist:.1f}mm < しきい値 {threshold:.1f}mm",
+                message=f"下階壁（{mat}）との距離 {dist:.1f}mm < しきい値 {threshold:.1f}mm",
                 related_coords=[sleeve.center, wall.start, wall.end],
                 target=_sleeve_target(sleeve),
-                rule=f"スリーブ中心と下階壁（{wtype}）中心線の距離 ≥ スリーブ半径 + 壁厚/2",
+                rule=f"スリーブ中心と下階壁（{mat}）中心線の距離 ≥ スリーブ半径 + 壁厚/2",
                 expected=f"距離 ≥ {threshold:.1f}mm",
                 found=f"距離 {dist:.1f}mm（{wall.layer or '下階壁'}）",
                 fix_hint="スリーブ位置を下階壁から離すか、下階の壁配置を確認する",

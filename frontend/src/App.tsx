@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import type { FloorData, Sleeve, CheckResult } from "./types";
 import { getFloors, parseFloor, runChecks, uploadDxf, uploadDwg, uploadIfc } from "./api";
 import { useUniversalEntities } from "./useUniversalEntities";
@@ -82,8 +82,8 @@ function App() {
   const [layers, setLayers] = useState({
     // categories
     grid: true,           // 通り芯
-    outerWall: true,      // 外壁
-    wall: true,           // 内壁
+    kutaiheki: true,      // 躯体壁 (RC/PCa)
+    kanshikiheki: true,   // 乾式壁 (ALC/LGS/CB等)
     firewall: true,       // 耐火壁・防火区画
     column: true,         // 柱・仕上線
     beam: false,          // 梁
@@ -133,6 +133,32 @@ function App() {
   const toggleLayer = (key: keyof typeof layers) =>
     setLayers((p) => ({ ...p, [key]: !p[key] }));
 
+  // Manual layer-category overrides — keyed by floor id so each drawing
+  // keeps its own corrections. Persisted to localStorage so reloads don't
+  // wipe the user's classification work.
+  // Shape: { [floorId]: { [layerName]: category } }
+  const [layerCategoryOverrides, setLayerCategoryOverrides] = useState<
+    Record<string, Record<string, string>>
+  >(() => {
+    try {
+      const raw = localStorage.getItem("layerCategoryOverrides");
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        "layerCategoryOverrides",
+        JSON.stringify(layerCategoryOverrides),
+      );
+    } catch {
+      // localStorage write can fail (quota / private mode) — overrides
+      // remain in-memory for the rest of this session.
+    }
+  }, [layerCategoryOverrides]);
+
   // Stable callback so DrawingView's React.memo stays effective
   const handleNavigated = useCallback(() => setNavigateTarget(null), []);
 
@@ -151,6 +177,40 @@ function App() {
   // Lower floor (level − 1) for wall-interference overlay and inter-floor checks.
   const lowerFloor = findLowerFloor(floors, activeFloor.id);
   const lowerFloorData = lowerFloor?.data ?? null;
+
+  // Current-floor overrides + the merged "effective" category map. The
+  // merged map is what both the drawing toolbar and the data tab consult
+  // when deciding which category a layer belongs to.
+  const currentOverrides = layerCategoryOverrides[activeFloor.id] || {};
+  const effectiveLayerCategories = useMemo(() => {
+    const base = universalEntities?.layer_categories || {};
+    return { ...base, ...currentOverrides };
+  }, [universalEntities, currentOverrides]);
+
+  // Update one layer's category. Passing `null` clears the override and
+  // returns the layer to whatever the auto-classifier produced.
+  const setLayerCategory = useCallback(
+    (layer: string, category: string | null) => {
+      const floorId = activeFloor.id;
+      if (!floorId) return;
+      setLayerCategoryOverrides((prev) => {
+        const next = { ...prev };
+        const floorMap = { ...(next[floorId] || {}) };
+        if (category === null) {
+          delete floorMap[layer];
+        } else {
+          floorMap[layer] = category;
+        }
+        if (Object.keys(floorMap).length === 0) {
+          delete next[floorId];
+        } else {
+          next[floorId] = floorMap;
+        }
+        return next;
+      });
+    },
+    [activeFloor.id],
+  );
 
   // Sleeve counts per discipline (for filter badges)
   const sleeveCounts = (() => {
@@ -506,7 +566,7 @@ function App() {
                   floorData={floorData}
                   lowerFloorData={layers.lowerWall ? lowerFloorData : null}
                   universalEntities={universalEntities?.entities ?? null}
-                  layerCategories={universalEntities?.layer_categories ?? null}
+                  layerCategories={universalEntities ? effectiveLayerCategories : null}
                   results={results}
                   onSleeveHover={setHoveredSleeve}
                   onSleeveClick={setSelectedSleeve}
@@ -536,7 +596,7 @@ function App() {
             {/* Right sidebar */}
             <div className="no-print" style={{ width: 300, borderLeft: "1px solid #e5e7eb", background: "#fff", overflow: "auto", flexShrink: 0 }}>
               {displaySleeve ? (
-                <SleeveInfo sleeve={displaySleeve} results={results} />
+                <SleeveInfo sleeve={displaySleeve} results={results} slabLabels={floorData.slab_labels} />
               ) : (
                 <div style={{ padding: 20, color: "#9ca3af", fontSize: 13, textAlign: "center", marginTop: 40 }}>
                   スリーブにカーソルを合わせると<br />詳細が表示されます
@@ -550,6 +610,8 @@ function App() {
               <DataExplorer
                 floorData={floorData}
                 floorId={activeFloor.id}
+                layerOverrides={currentOverrides}
+                onCategoryChange={setLayerCategory}
                 onNavigate={(coords, sleeveId) => {
                   setViewMode("drawing");
                   setNavigateTarget(coords);

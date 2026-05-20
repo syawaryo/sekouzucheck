@@ -396,8 +396,6 @@ export default function DataExplorer({
     const grouped = new Map<string, UniversalEntity[]>();   // key = "<cat>\x1f<layer>"
     const SEP = "\x1f";
     for (const e of universal.entities) {
-      // Skip children folded into a parent INSERT row.
-      if (e.props && e.props.parent_handle) continue;
       const manual = layerOverrides[e.layer];
       let cat: string;
       if (manual) {

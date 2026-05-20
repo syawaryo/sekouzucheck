@@ -221,9 +221,9 @@ function renderRawEntitiesByCategory(
     } else if (t === "TEXT" || t === "MTEXT" || t === "ATTRIB") {
       // Render any text on this layer at its world position. Decomposed
       // children (with parent_handle) sit at the correct in-block world
-      // coords because universal_parser ran them through OCS→WCS, so we
-      // don't filter by parent_handle here — that filter is only for the
-      // data-tab compaction, not figure layout.
+      // coords because universal_parser ran them through OCS→WCS, so
+      // both the drawing and the data tab include them as first-class
+      // entities.
       const txt = (e.subtype || "").trim();
       if (!txt) continue;
       const px = e.pos?.[0];

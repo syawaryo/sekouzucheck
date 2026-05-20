@@ -112,6 +112,63 @@ def _flatten_dxf(filepath: str | Path) -> UniversalDump:
                 props["end_angle"] = float(getattr(e.dxf, "end_angle", 0.0))
             elif t == "ELLIPSE":
                 pos = (float(e.dxf.center.x), float(e.dxf.center.y))
+                # Major axis is a vector from the center; ratio is the
+                # minor:major ratio. start_param/end_param define the
+                # sub-arc when the ELLIPSE is partial (full ellipse uses
+                # 0 .. 2π).  The drawing view needs these to render the
+                # actual oval orientation (e.g. REBERU レベルマーク blocks).
+                try:
+                    mj = e.dxf.major_axis
+                    props["major_axis"] = [float(mj.x), float(mj.y)]
+                    props["ratio"] = float(getattr(e.dxf, "ratio", 1.0))
+                    props["start_param"] = float(getattr(e.dxf, "start_param", 0.0))
+                    import math
+                    props["end_param"] = float(getattr(e.dxf, "end_param", 2 * math.pi))
+                except Exception:
+                    pass
+            elif t == "SPLINE":
+                # Flatten the spline to a polyline at 0.5-unit chord distance.
+                # The drawing view then renders it via the same path branch
+                # used for LWPOLYLINE.
+                try:
+                    flat = [(float(p[0]), float(p[1])) for p in e.flattening(0.5)]
+                    if flat:
+                        pos = flat[0]
+                        props["vertices"] = [list(p) for p in flat]
+                        props["vertex_count"] = len(flat)
+                        props["closed"] = bool(getattr(e, "closed", False))
+                except Exception:
+                    pass
+            elif t in ("SOLID", "TRACE", "3DFACE"):
+                # Triangular/quad filled regions — used as dimension
+                # arrowheads in the wild, and occasionally for solid hatches.
+                try:
+                    pts: list[list[float]] = []
+                    for attr in ("vtx0", "vtx1", "vtx2", "vtx3"):
+                        v = getattr(e.dxf, attr, None)
+                        if v is not None:
+                            pts.append([float(v.x), float(v.y)])
+                    # SOLID stores vertices in winding order (0,1,3,2) — we
+                    # reorder to a clean polygon (0,1,2,3) before emitting.
+                    if t == "SOLID" and len(pts) == 4:
+                        pts = [pts[0], pts[1], pts[3], pts[2]]
+                    if pts:
+                        pos = (pts[0][0], pts[0][1])
+                        props["vertices"] = pts
+                except Exception:
+                    pass
+            elif t == "LEADER":
+                # Vertices spell out the leader's joint path. Parser also
+                # decomposes LEADERs into their constituent LINEs below
+                # (see the modelspace walk), so this branch is mostly for
+                # standalone occurrences inside blocks.
+                try:
+                    verts = [(float(v[0]), float(v[1])) for v in e.vertices]
+                    if verts:
+                        pos = verts[0]
+                        props["vertices"] = [list(p) for p in verts]
+                except Exception:
+                    pass
             elif t in ("LWPOLYLINE", "POLYLINE"):
                 try:
                     if t == "LWPOLYLINE":
@@ -230,7 +287,8 @@ def _flatten_dxf(filepath: str | Path) -> UniversalDump:
         "LINE", "CIRCLE", "ARC", "ELLIPSE",
         "LWPOLYLINE", "POLYLINE", "POINT",
         "TEXT", "MTEXT", "ATTRIB", "ATTDEF",
-        "HATCH", "DIMENSION",
+        "HATCH", "DIMENSION", "LEADER",
+        "SPLINE", "SOLID", "TRACE", "3DFACE",
     }
 
     # Text-only subset — used downstream to roll up child values onto the
@@ -244,8 +302,32 @@ def _flatten_dxf(filepath: str | Path) -> UniversalDump:
         for e in layout:
             _push(e)
             insert_idx = len(entities) - 1  # remember where the INSERT row sits
+            t0 = e.dxftype()
 
-            if e.dxftype() != "INSERT":
+            # DIMENSION / LEADER carry their visual geometry inside an
+            # anonymous block (or in computed sub-entities for LEADER).
+            # `virtual_entities()` resolves both to flat LINE / MTEXT /
+            # INSERT (arrowhead) primitives that the drawing view already
+            # knows how to render.  We pin every child to the parent's
+            # layer so the data tab counts them on the dim/leader layer
+            # rather than on whatever the construction defpoint layer is.
+            if t0 in ("DIMENSION", "LEADER"):
+                try:
+                    parent_handle = getattr(e.dxf, "handle", "") or ""
+                    parent_layer = getattr(e.dxf, "layer", "") or ""
+                    for v in e.virtual_entities():
+                        vt = v.dxftype()
+                        # DEFPOINTS markers are construction helpers — not
+                        # drawn in production CAD output and not useful here.
+                        if vt == "POINT" and getattr(v.dxf, "layer", "") == "DEFPOINTS":
+                            continue
+                        _push(v, override_layer=parent_layer,
+                              parent_handle=parent_handle)
+                except Exception:
+                    pass
+                continue
+
+            if t0 != "INSERT":
                 continue
 
             try:

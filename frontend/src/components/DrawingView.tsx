@@ -138,7 +138,9 @@ function renderRawEntitiesByCategory(
           strokeDasharray={style.strokeDasharray}
         />,
       );
-    } else if (t === "LWPOLYLINE" || t === "POLYLINE") {
+    } else if (t === "LWPOLYLINE" || t === "POLYLINE" || t === "SPLINE") {
+      // SPLINE shares the same path-from-vertex render — the parser
+      // already flattened curves into a polyline.
       const verts: number[][] | undefined = e.props?.vertices;
       if (!verts || verts.length === 0) continue;
       const closed = !!e.props?.closed;
@@ -153,6 +155,112 @@ function renderRawEntitiesByCategory(
           strokeDasharray={style.strokeDasharray}
           fill={closed ? (style.fill ?? "none") : "none"}
           fillOpacity={closed ? style.fillOpacity : undefined}
+        />,
+      );
+    } else if (t === "ARC") {
+      // DXF stores ARC angles CCW from +X in degrees. SVG's elliptical
+      // arc command uses end-point + sweep-flag form, so compute the
+      // start/end coords from (center, radius, angle) and pick the
+      // large-arc flag from the sweep magnitude.
+      const cx = e.pos?.[0];
+      const cy = e.pos?.[1];
+      const r = e.props?.radius;
+      const a1 = e.props?.start_angle;
+      const a2 = e.props?.end_angle;
+      if (cx == null || cy == null || !r || a1 == null || a2 == null) continue;
+      const rad1 = (a1 * Math.PI) / 180;
+      const rad2 = (a2 * Math.PI) / 180;
+      const sx = cx + r * Math.cos(rad1);
+      const sy = cy + r * Math.sin(rad1);
+      const ex = cx + r * Math.cos(rad2);
+      const ey = cy + r * Math.sin(rad2);
+      let sweep = a2 - a1;
+      while (sweep < 0) sweep += 360;
+      while (sweep >= 360) sweep -= 360;
+      const largeArc = sweep > 180 ? 1 : 0;
+      out.push(
+        <path
+          key={`${keyPrefix}-${i}`}
+          d={`M ${sx} ${sy} A ${r} ${r} 0 ${largeArc} 1 ${ex} ${ey}`}
+          stroke={style.stroke}
+          strokeWidth={style.strokeWidth}
+          strokeOpacity={style.strokeOpacity}
+          strokeDasharray={style.strokeDasharray}
+          fill="none"
+        />,
+      );
+    } else if (t === "ELLIPSE") {
+      // major_axis is a vector from center to the major-axis endpoint;
+      // ratio = minor / major. We render as an <ellipse> rotated to
+      // match the major-axis direction.
+      const cx = e.pos?.[0];
+      const cy = e.pos?.[1];
+      const mj = e.props?.major_axis as [number, number] | undefined;
+      const ratio = e.props?.ratio as number | undefined;
+      if (cx == null || cy == null || !mj || ratio == null) continue;
+      const rx = Math.sqrt(mj[0] * mj[0] + mj[1] * mj[1]);
+      const ry = rx * ratio;
+      if (!rx) continue;
+      const rotation = (Math.atan2(mj[1], mj[0]) * 180) / Math.PI;
+      out.push(
+        <ellipse
+          key={`${keyPrefix}-${i}`}
+          cx={cx} cy={cy} rx={rx} ry={ry}
+          transform={`rotate(${rotation} ${cx} ${cy})`}
+          stroke={style.stroke}
+          strokeWidth={style.strokeWidth}
+          strokeOpacity={style.strokeOpacity}
+          fill={style.fill ?? "none"}
+          fillOpacity={style.fillOpacity}
+        />,
+      );
+    } else if (t === "POINT") {
+      // POINTs are 0-dimensional markers in DXF — draw a tiny solid dot
+      // so the reader sees "something is anchored here".
+      const cx = e.pos?.[0];
+      const cy = e.pos?.[1];
+      if (cx == null || cy == null) continue;
+      const r = (style.strokeWidth ?? 10) * 1.5;
+      out.push(
+        <circle
+          key={`${keyPrefix}-${i}`}
+          cx={cx} cy={cy} r={r}
+          fill={style.stroke}
+          fillOpacity={style.strokeOpacity}
+        />,
+      );
+    } else if (t === "SOLID" || t === "TRACE" || t === "3DFACE") {
+      // Filled triangle/quad — used by DIMENSION arrowheads (post
+      // virtual_entities decomposition) and occasionally for solid fills.
+      const verts = e.props?.vertices as number[][] | undefined;
+      if (!verts || verts.length < 3) continue;
+      const d = "M " + verts.map(([x, y]) => `${x} ${y}`).join(" L ") + " Z";
+      out.push(
+        <path
+          key={`${keyPrefix}-${i}`}
+          d={d}
+          fill={style.stroke}
+          fillOpacity={style.strokeOpacity ?? 0.85}
+          stroke={style.stroke}
+          strokeWidth={(style.strokeWidth ?? 10) * 0.5}
+          strokeOpacity={style.strokeOpacity}
+        />,
+      );
+    } else if (t === "LEADER") {
+      // Standalone LEADER (rarely present after parser decomposition,
+      // but it shows up when a LEADER lives inside a block that we
+      // didn't expand).  Render the vertex polyline like a polyline.
+      const verts: number[][] | undefined = e.props?.vertices;
+      if (!verts || verts.length === 0) continue;
+      const d = "M " + verts.map(([x, y]) => `${x} ${y}`).join(" L ");
+      out.push(
+        <path
+          key={`${keyPrefix}-${i}`}
+          d={d}
+          stroke={style.stroke}
+          strokeWidth={style.strokeWidth}
+          strokeOpacity={style.strokeOpacity}
+          fill="none"
         />,
       );
     } else if (t === "CIRCLE") {
@@ -279,8 +387,10 @@ function renderRawEntitiesByCategory(
         );
       }
     }
-    // ARC / DIMENSION are still skipped — ARC fragments rarely add signal
-    // when raw, and DIMENSIONs have their own dedicated typed renderer.
+    // DIMENSION entities themselves are intentionally skipped here — the
+    // parser decomposes each one into LINE / MTEXT / INSERT / SOLID
+    // primitives via virtual_entities(), and those children render via
+    // the regular branches above.
   }
   return out;
 }

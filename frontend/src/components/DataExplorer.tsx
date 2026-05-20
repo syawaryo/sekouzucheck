@@ -86,6 +86,9 @@ const DISPLAY_LABEL: Record<string, string> = {
   "躯体壁": "躯体壁 (RC/PCa)",
   "乾式壁": "乾式壁 (ALC/LGS/CB等)",
   "耐火壁・防火区画": "耐火壁・防火区画",
+  // The underlying key stays "不要" for backend / cache compatibility.
+  // Label softens it to "候補" because auto-classification is best-effort.
+  "不要": "不要候補",
 };
 
 function displayName(group: string): string {
@@ -527,7 +530,7 @@ export default function DataExplorer({
               whiteSpace: "nowrap",
             }}
           >
-            {showHidden ? "不要を隠す" : `不要を表示 (${hiddenCount})`}
+            {showHidden ? "不要候補を隠す" : `不要候補を表示 (${hiddenCount})`}
           </button>
         )}
         {loading && <span style={{ fontSize: 11, color: "#9ca3af" }}>読込中…</span>}

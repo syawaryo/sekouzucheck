@@ -16,6 +16,7 @@ export function useUniversalEntities(floorId: string | null) {
   useEffect(() => {
     if (!floorId) {
       setData(null);
+      setLoading(false);
       return;
     }
     const cached = _cache.get(floorId);
@@ -24,6 +25,12 @@ export function useUniversalEntities(floorId: string | null) {
       setLoading(false);
       return;
     }
+
+    // Clear stale data from the previous floor immediately. Without this,
+    // the data tab keeps rendering the old floor's entities while the new
+    // floor's fetch is in flight — which makes users wonder whether the
+    // displayed content actually matches the active tab.
+    setData(null);
 
     let cancelled = false;
     setLoading(true);

@@ -564,6 +564,11 @@ export default function DataExplorer({
             図面を選択してください
           </div>
         )}
+        {!universal && loading && (
+          <div style={{ color: "#9ca3af", textAlign: "center", marginTop: 60, fontSize: 13 }}>
+            読み込み中...
+          </div>
+        )}
         {universal && grouped.length === 0 && headerRows.length === 0 && (
           <div style={{ color: "#9ca3af", textAlign: "center", marginTop: 60, fontSize: 13 }}>
             該当するデータがありません

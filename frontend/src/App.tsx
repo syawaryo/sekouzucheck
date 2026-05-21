@@ -170,7 +170,7 @@ function App() {
   // Fetch the universal entity dump for whichever floor is active. The
   // DrawingView and DataExplorer both consume it; the hook caches the
   // result so we only pay once per floor per session.
-  const { data: universalEntities } = useUniversalEntities(
+  const { data: universalEntities, loading: universalLoading } = useUniversalEntities(
     activeFloor.id || null,
   );
 
@@ -556,6 +556,43 @@ function App() {
       )}
 
       {/* Main content */}
+      <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+        {/* Floor identity strip — confirms which file's content is currently
+            being rendered, and highlights when a re-fetch is in flight so
+            users don't wonder if the displayed data matches the active tab. */}
+        {floors.length > 0 && activeFloor.id && (
+          <div
+            className="no-print"
+            style={{
+              background: universalLoading ? "#fef3c7" : "#f9fafb",
+              borderBottom: "1px solid #e5e7eb",
+              padding: "4px 16px",
+              fontSize: 11,
+              color: "#6b7280",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              transition: "background 0.15s",
+              flexShrink: 0,
+            }}
+          >
+            <span>現在表示中:</span>
+            <span style={{ fontWeight: 600, color: "#111827" }}>{activeFloor.label}</span>
+            <span
+              style={{
+                fontSize: 9, fontWeight: 600, padding: "1px 5px", borderRadius: 3,
+                background: activeFloor.source === "ifc" ? "#dbeafe" : activeFloor.source === "dwg" ? "#fef3c7" : "#f3f4f6",
+                color: activeFloor.source === "ifc" ? "#1e40af" : activeFloor.source === "dwg" ? "#92400e" : "#6b7280",
+                letterSpacing: 0.3,
+              }}
+            >{activeFloor.source.toUpperCase()}</span>
+            {universalLoading && (
+              <span style={{ marginLeft: "auto", color: "#92400e", fontWeight: 500 }}>
+                ● 読み込み中...
+              </span>
+            )}
+          </div>
+        )}
       <div style={{ flex: 1, overflow: "hidden", display: "flex" }}>
         {floors.length === 0 ? (
           <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16, color: "#9ca3af" }}>
@@ -674,6 +711,7 @@ function App() {
             )}
           </div>
         )}
+      </div>
       </div>
 
       {/* Print-only: results table appended on separate page(s) */}

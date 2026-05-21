@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import type { FloorData, Sleeve, CheckResult } from "./types";
-import { getFloors, parseFloor, runChecks, uploadDxf, uploadDwg, uploadIfc } from "./api";
+import { getFloors, parseFloor, runChecks, uploadDxf, uploadDwg, uploadIfc, deleteFloor } from "./api";
 import { useUniversalEntities } from "./useUniversalEntities";
 import DrawingView from "./components/DrawingView";
 import SleeveInfo from "./components/SleeveInfo";
@@ -326,10 +326,21 @@ function App() {
     setLoading(false);
   };
 
-  const handleRemoveFloor = (idx: number) => {
+  const handleRemoveFloor = async (idx: number) => {
+    const target = floors[idx];
+    if (!target) return;
+    // Drop from UI immediately for snappy feel — then ask the server to
+    // delete the source file + caches so the floor doesn't come back on
+    // reload. Failures are non-fatal: if the server delete fails the user
+    // still wanted it gone from the tab list.
     setFloors((prev) => prev.filter((_, i) => i !== idx));
     if (activeFloorIdx >= floors.length - 1) {
       setActiveFloorIdx(Math.max(0, floors.length - 2));
+    }
+    try {
+      await deleteFloor(target.id);
+    } catch (e) {
+      console.error("deleteFloor failed:", e);
     }
   };
 

@@ -46,6 +46,10 @@ export async function parseFloor(floorId: string): Promise<FloorData> {
   return res.data;
 }
 
+export async function deleteFloor(floorId: string): Promise<void> {
+  await axios.delete(`${BASE}/floors/${encodeURIComponent(floorId)}`);
+}
+
 export async function runChecks(floor2fId: string, floor1fId?: string): Promise<CheckResponse> {
   const res = await axios.post(`${BASE}/check`, {
     floor_2f_id: floor2fId,

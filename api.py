@@ -404,6 +404,65 @@ def list_floors() -> list[dict]:
     return floors
 
 
+@app.delete("/api/floors/{floor_id}")
+def delete_floor(floor_id: str) -> dict:
+    """Remove a floor: its source file(s) and every derived cache entry.
+
+    Lets the UI prune unwanted entries (test uploads, accidental DWG → tmp
+    artefacts, etc.) from the Persistent Disk so they stop appearing in tabs.
+    """
+    import shutil as _shutil
+
+    removed: list[str] = []
+
+    # IFC: floor_id maps to a directory of .ifc files
+    if floor_id in _IFC_SOURCES:
+        folder = IFC_DIR / floor_id
+        if folder.is_dir():
+            _shutil.rmtree(folder, ignore_errors=True)
+            removed.append(str(folder))
+        _IFC_SOURCES.pop(floor_id, None)
+        _parse_cache.pop(f"ifc::{floor_id}", None)
+
+    # DXF: floor_id maps to a single .dxf
+    stem = _ID_TO_STEM.get(floor_id)
+    if stem:
+        dxf_path = DXF_DIR / f"{stem}.dxf"
+        if dxf_path.is_file():
+            try:
+                dxf_path.unlink()
+                removed.append(str(dxf_path))
+            except OSError:
+                pass
+        _parse_cache.pop(str(dxf_path.resolve()), None)
+
+        # On-disk parse cache (.parse_cache/<stem>.json)
+        pc = _cache_path(dxf_path)
+        if pc.is_file():
+            pc.unlink(missing_ok=True)
+
+    # Universal-entity caches keyed by floor_id
+    _universal_cache.pop(floor_id, None)
+    ae_cache = _all_entities_cache_path(floor_id)
+    if ae_cache.is_file():
+        ae_cache.unlink(missing_ok=True)
+
+    # Classifier cache keyed by floor_id (created in /api/all_entities)
+    classifier_cache = DATA_DIR / ".classifier_cache" / f"{floor_id}.json"
+    if classifier_cache.is_file():
+        classifier_cache.unlink(missing_ok=True)
+
+    # Strip from the id maps last so the lookups above could still resolve
+    if stem:
+        _FLOOR_ID_MAP.pop(stem, None)
+    _ID_TO_STEM.pop(floor_id, None)
+
+    if not removed and stem is None and floor_id not in _IFC_SOURCES:
+        raise HTTPException(status_code=404, detail=f"Unknown floor_id '{floor_id}'")
+
+    return {"id": floor_id, "removed": removed}
+
+
 @app.post("/api/upload")
 async def upload_dxf(file: UploadFile = File(...), label: str = Form("")):
     """Upload a DXF file and return its floor entry."""

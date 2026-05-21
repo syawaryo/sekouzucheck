@@ -55,8 +55,35 @@ app.add_middleware(
 # Constants
 # ---------------------------------------------------------------------------
 
-DXF_DIR = Path("dxf_output")
-IFC_DIR = Path("ifc_output")
+# Where mutable state lives. On Render this is a Persistent Disk mounted at
+# /app/data so uploads + caches survive container restarts. Defaults to the
+# repo root for local dev (preserves existing dxf_output/ behaviour).
+DATA_DIR = Path(os.getenv("DATA_DIR", "."))
+
+DXF_DIR = DATA_DIR / "dxf_output"
+IFC_DIR = DATA_DIR / "ifc_output"
+
+# Seed dir baked into the Docker image (COPY dxf_output/ ./dxf_output/). Used
+# to populate a fresh Persistent Disk with the default 1F/2F samples on first
+# boot — Path(__file__).parent is /app in the deployed image.
+_SEED_DXF_DIR = Path(__file__).resolve().parent / "dxf_output"
+
+
+def _seed_data_dir() -> None:
+    """Copy baked-in seed DXFs into DXF_DIR if the disk is empty."""
+    if DATA_DIR.resolve() == Path(".").resolve():
+        return  # local dev: DXF_DIR already points at the seed dir
+    if not _SEED_DXF_DIR.is_dir():
+        return
+    DXF_DIR.mkdir(parents=True, exist_ok=True)
+    for src in _SEED_DXF_DIR.glob("*.dxf"):
+        dst = DXF_DIR / src.name
+        if not dst.exists():
+            import shutil
+            shutil.copy2(src, dst)
+
+
+_seed_data_dir()
 
 # Map filename stems to short IDs — built dynamically via _stem_to_floor_id()
 _FLOOR_ID_MAP: dict[str, str] = {}
@@ -146,7 +173,7 @@ def _resolve_floor_data(floor_id: str | None, path: str | None) -> FloorData:
     return _get_or_parse(filepath)
 
 
-CACHE_DIR = Path(".parse_cache")
+CACHE_DIR = DATA_DIR / ".parse_cache"
 
 
 def _dict_to_floor_data(d: dict) -> FloorData:
@@ -416,22 +443,21 @@ async def upload_dwg(file: UploadFile = File(...), label: str = Form("")):
     DXF_DIR.mkdir(exist_ok=True)
     stem = Path(file.filename).stem
 
-    with tempfile.NamedTemporaryFile(suffix=".dwg", delete=False) as tmp:
-        tmp.write(await file.read())
-        dwg_tmp = Path(tmp.name)
-
-    try:
-        dxf_path = convert_dwg_to_dxf(dwg_tmp, DXF_DIR)
-    except DwgConversionError as e:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"DWG→DXF conversion failed: {e} — "
-                "try converting locally with ODA File Converter and upload the DXF."
-            ),
-        )
-    finally:
-        dwg_tmp.unlink(missing_ok=True)
+    # Stage with original filename so the converter's output DXF inherits the
+    # original stem (it derives the output name from the input stem).
+    with tempfile.TemporaryDirectory() as tmpdir:
+        dwg_tmp = Path(tmpdir) / f"{stem}.dwg"
+        dwg_tmp.write_bytes(await file.read())
+        try:
+            dxf_path = convert_dwg_to_dxf(dwg_tmp, DXF_DIR)
+        except DwgConversionError as e:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"DWG→DXF conversion failed: {e} — "
+                    "try converting locally with ODA File Converter and upload the DXF."
+                ),
+            )
 
     floor_id = _FLOOR_ID_MAP.get(stem) or _stem_to_floor_id(stem)
     _FLOOR_ID_MAP[stem] = floor_id
@@ -513,7 +539,7 @@ def parse_floor(request: ParseRequest) -> dict:
 # ---------------------------------------------------------------------------
 
 _universal_cache: dict[str, dict] = {}
-_ALL_ENTITIES_CACHE_DIR = Path(".all_entities_cache")
+_ALL_ENTITIES_CACHE_DIR = DATA_DIR / ".all_entities_cache"
 
 
 def _all_entities_cache_path(cache_key: str) -> Path:
@@ -582,7 +608,7 @@ def all_entities(request: ParseRequest) -> dict:
 
     # Classify via LLM (cached on disk). Each unique layer is sent to the
     # LLM exactly once per project — subsequent parses read the cache.
-    cache_dir = Path(".classifier_cache")
+    cache_dir = DATA_DIR / ".classifier_cache"
     cache_file = cache_dir / f"{cache_key or 'default'}.json"
     classifications = classify_layers(
         layer_inputs,

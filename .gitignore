@@ -9,3 +9,32 @@ static/
 .parse_cache/
 .classifier_cache/
 .all_entities_cache/
+
+# ---------------------------------------------------------------------------
+# Throwaway local artifacts — investigation scripts + their dumps.
+# Underscore-prefix at repo root is the team's "scratch script" convention.
+# ---------------------------------------------------------------------------
+/_*.py
+/_*.txt
+/_*.json
+/_*.md
+
+# Drawing/step debug dumps
+*_stepmap.svg
+*.full_dump.json
+/dxf_layers_raw.txt
+
+# Reports + notes generated during analysis sessions
+/layer_analysis_final_report.md
+/layer_classification_report.txt
+/memo.md
+/-AICE-AI-*.md
+/print-*.pdf
+
+# User-uploaded sample data (now persisted on Render disk — not needed in git).
+# Tracked seed DXFs (1階/2階床スリーブ図.dxf) are unaffected since gitignore
+# never untracks files already in git.
+/dxf_output/*.dxf
+/dxf_output/*.json
+/ifc_output/
+/*.ifc

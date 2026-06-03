@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import type { FloorData, Sleeve, CheckResult } from "./types";
-import { getFloors, parseFloor, runChecks, uploadDxf, uploadDwg, uploadIfc, deleteFloor } from "./api";
+import type { FloorData, Sleeve, CheckResult, CheckDef } from "./types";
+import { getFloors, parseFloor, runChecks, uploadDxf, uploadDwg, uploadIfc, deleteFloor, listChecks } from "./api";
 import { useUniversalEntities } from "./useUniversalEntities";
 import DrawingView from "./components/DrawingView";
 import SleeveInfo from "./components/SleeveInfo";
 import ListView from "./components/ListView";
 import DataExplorer from "./components/DataExplorer";
+import CheckManager from "./components/CheckManager";
 import * as pdfjs from "pdfjs-dist";
 
 // Vite bundles the worker URL for us; pdf.js requires this or it falls back
@@ -75,6 +76,14 @@ function App() {
   const [navigateTarget, setNavigateTarget] = useState<[number, number] | null>(null);
   const [highlightCoords, setHighlightCoords] = useState<[number, number][]>([]);
   const [openChecks, setOpenChecks] = useState<Set<number>>(new Set());
+  // Check registry — drives the editable "チェック観点" panel and seeds the
+  // list view so every enabled check shows up even when all-OK.
+  const [checkManagerOpen, setCheckManagerOpen] = useState(false);
+  const [checkDefs, setCheckDefs] = useState<CheckDef[]>([]);
+  const refreshCheckDefs = useCallback(() => {
+    listChecks().then(setCheckDefs).catch(() => {});
+  }, []);
+  useEffect(() => { refreshCheckDefs(); }, [refreshCheckDefs]);
   // Layer toggles. The first block (1-to-1 with data tab GROUP_ORDER) is
   // category-driven — each toggle corresponds to one of the 23 useful
   // categories. The second block (overlays) is typed-rendering modes that
@@ -406,6 +415,15 @@ function App() {
           </button>
         )}
 
+        <button onClick={() => setCheckManagerOpen(true)}
+          style={{
+            padding: "5px 14px", background: "#fff", color: "#374151",
+            border: "1px solid #d1d5db", borderRadius: 6, cursor: "pointer",
+            fontSize: 12, fontWeight: 500,
+          }}>
+          チェック観点
+        </button>
+
         {hasData && floorData && (
           <div style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 12 }}>
             <input
@@ -502,6 +520,14 @@ function App() {
               style={{ background: "none", border: "none", color: "#dc2626", cursor: "pointer", fontSize: 14, padding: 0, lineHeight: 1 }}>x</button>
           </div>
         </div>
+      )}
+
+      {/* Check registry editor */}
+      {checkManagerOpen && (
+        <CheckManager
+          onClose={() => setCheckManagerOpen(false)}
+          onChanged={refreshCheckDefs}
+        />
       )}
 
       {/* Unified upload modal — .dxf / .dwg / .ifc */}
@@ -684,6 +710,7 @@ function App() {
               <ListView
                 floorData={floorData}
                 results={results}
+                checkDefs={checkDefs}
                 filter={filter}
                 onFilterChange={setFilter}
                 openChecks={openChecks}

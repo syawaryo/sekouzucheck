@@ -1,9 +1,10 @@
 import { useMemo } from "react";
-import type { FloorData, CheckResult } from "../types";
+import type { FloorData, CheckResult, CheckDef } from "../types";
 
 interface Props {
   floorData: FloorData;
   results: CheckResult[];
+  checkDefs?: CheckDef[];
   filter: "all" | "NG" | "WARNING" | "OK";
   onFilterChange: (v: "all" | "NG" | "WARNING" | "OK") => void;
   openChecks: Set<number>;
@@ -11,25 +12,9 @@ interface Props {
   onNavigate?: (coords: [number, number], sleeveId?: string, relatedCoords?: [number, number][]) => void;
 }
 
-const CHECK_DEFS: { id: number; name: string }[] = [
-  { id: 2, name: "スリーブ用途・設備種別" },
-  { id: 3, name: "呼び口径・外径記載" },
-  { id: 4, name: "通り芯寸法合計" },
-  { id: 5, name: "勾配確保" },
-  { id: 6, name: "下階壁干渉" },
-  { id: 7, name: "段差スラブ近接" },
-  { id: 8, name: "基準レベル記載" },
-  { id: 9, name: "位置特定寸法" },
-  { id: 10, name: "段差基準寸法" },
-  { id: 11, name: "スリーブ芯寸法" },
-  { id: 12, name: "柱面・仕上面寸法" },
-  { id: 13, name: "寸法表記統一" },
-  { id: 14, name: "スリーブNo記載" },
-];
-
 const SEV_ORDER = { NG: 0, WARNING: 1, OK: 2 };
 
-export default function ListView({ floorData, results, filter, onFilterChange, openChecks, onOpenChecksChange, onNavigate }: Props) {
+export default function ListView({ floorData, results, checkDefs, filter, onFilterChange, openChecks, onOpenChecksChange, onNavigate }: Props) {
   const toggleCheck = (id: number) => {
     const next = new Set(openChecks);
     if (next.has(id)) next.delete(id); else next.add(id);
@@ -41,7 +26,7 @@ export default function ListView({ floorData, results, filter, onFilterChange, o
       checkId: number; checkName: string; results: CheckResult[];
       worst: "NG" | "WARNING" | "OK"; ngCount: number; warnCount: number; okCount: number;
     }>();
-    for (const def of CHECK_DEFS) {
+    for (const def of (checkDefs ?? []).filter((d) => d.enabled)) {
       groups.set(def.id, { checkId: def.id, checkName: def.name, results: [], worst: "OK", ngCount: 0, warnCount: 0, okCount: 0 });
     }
     for (const r of results) {
@@ -54,7 +39,7 @@ export default function ListView({ floorData, results, filter, onFilterChange, o
     }
     for (const g of groups.values()) g.results.sort((a, b) => SEV_ORDER[a.severity as keyof typeof SEV_ORDER] - SEV_ORDER[b.severity as keyof typeof SEV_ORDER]);
     return Array.from(groups.values()).sort((a, b) => SEV_ORDER[a.worst] - SEV_ORDER[b.worst]);
-  }, [results]);
+  }, [results, checkDefs]);
 
   const filtered = filter === "all" ? checkGroups : checkGroups.filter(g => g.worst === filter);
 

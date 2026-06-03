@@ -158,3 +158,13 @@ export interface CheckResponse {
   results: CheckResult[];
   summary: { ng: number; warning: number; ok: number };
 }
+
+export interface CheckDef {
+  id: number;
+  name: string;
+  category: string;
+  description: string;
+  source: "builtin" | "generated";
+  enabled: boolean;
+  order: number;
+}

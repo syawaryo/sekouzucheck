@@ -1,5 +1,5 @@
 import axios from "axios";
-import type { FloorData, CheckResponse } from "./types";
+import type { FloorData, CheckResponse, CheckDef } from "./types";
 
 const BASE = "/api";
 
@@ -58,6 +58,35 @@ export async function runChecks(floor2fId: string, floor1fId?: string): Promise<
     step_threshold: null,
   });
   return res.data;
+}
+
+// ---------------------------------------------------------------------------
+// Check registry — editable / freely-addable check perspectives.
+// ---------------------------------------------------------------------------
+
+export async function listChecks(): Promise<CheckDef[]> {
+  const res = await axios.get(`${BASE}/checks`);
+  return res.data;
+}
+
+export async function createCheck(input: {
+  name: string; category: string; description: string;
+}): Promise<CheckDef> {
+  // Generation calls the LLM server-side; allow generous time.
+  const res = await axios.post(`${BASE}/checks`, input, { timeout: 120_000 });
+  return res.data;
+}
+
+export async function updateCheck(
+  id: number,
+  patch: { name?: string; category?: string; description?: string; enabled?: boolean },
+): Promise<CheckDef> {
+  const res = await axios.put(`${BASE}/checks/${id}`, patch, { timeout: 120_000 });
+  return res.data;
+}
+
+export async function deleteCheck(id: number): Promise<void> {
+  await axios.delete(`${BASE}/checks/${id}`);
 }
 
 // ---------------------------------------------------------------------------

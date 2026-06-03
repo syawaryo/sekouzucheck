@@ -389,7 +389,7 @@ function App() {
       {/* Row 1: Header */}
       <div className="no-print" style={{ background: "#fff", borderBottom: "1px solid #e5e7eb", padding: "10px 20px", display: "flex", alignItems: "center", gap: 12 }}>
         <span style={{ fontSize: 16, fontWeight: 700, color: "#111827", letterSpacing: -0.3 }}>
-          スリーブチェッカー
+          AI施工図確認
         </span>
 
         {/* View toggle */}

@@ -20,6 +20,10 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from sleeve_checker.checks import run_all_checks
+from sleeve_checker.check_registry import (
+    CheckDef, load_registry, save_registry, next_id, run_registry_checks,
+)
+from sleeve_checker.codegen import generate_check_code, CodegenError
 from sleeve_checker.models import (
     FloorData, Sleeve, GridLine, DimLine, WallLine, StepLine,
     ColumnLine, BeamLine, SlabZone, SlabLabel, SlabOutline, PnLabel, RecessPolygon,
@@ -371,6 +375,19 @@ class CheckRequest(BaseModel):
     wall_thickness: dict[str, float] | None = None
 
 
+class CheckDefCreate(BaseModel):
+    name: str
+    category: str = "その他"
+    description: str
+
+
+class CheckDefUpdate(BaseModel):
+    name: str | None = None
+    category: str | None = None
+    description: str | None = None
+    enabled: bool | None = None
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -716,7 +733,7 @@ def run_checks(request: CheckRequest) -> dict:
     if request.floor_1f_id is not None or request.floor_1f_path is not None:
         floor_1f = _resolve_floor_data(request.floor_1f_id, request.floor_1f_path)
 
-    check_results = run_all_checks(
+    check_results = run_registry_checks(
         floor_2f=floor_2f,
         floor_1f=floor_1f,
         wall_thickness=request.wall_thickness,
@@ -731,6 +748,80 @@ def run_checks(request: CheckRequest) -> dict:
             summary[key] += 1
 
     return {"results": results_list, "summary": summary}
+
+
+# ---------------------------------------------------------------------------
+# Check registry CRUD — the editable / freely-addable check perspectives.
+# ---------------------------------------------------------------------------
+
+@app.get("/api/checks")
+def list_checks() -> list[dict]:
+    """Return every check definition (public shape, no raw code)."""
+    return [d.to_public_dict() for d in sorted(load_registry(), key=lambda x: x.order)]
+
+
+@app.post("/api/checks")
+def create_check(req: CheckDefCreate) -> dict:
+    """Add a check: generate Python from the free-text description, then save."""
+    defs = load_registry()
+    try:
+        code = generate_check_code(req.name, req.description)
+    except CodegenError as e:
+        raise HTTPException(status_code=400, detail=f"チェック生成に失敗しました: {e}")
+
+    new = CheckDef(
+        id=next_id(defs),
+        name=req.name.strip() or f"観点{next_id(defs)}",
+        category=req.category.strip() or "その他",
+        description=req.description,
+        builtin_key=None,
+        code=code,
+        enabled=True,
+        order=(max((d.order for d in defs), default=-1) + 1),
+    )
+    defs.append(new)
+    save_registry(defs)
+    return new.to_public_dict()
+
+
+@app.put("/api/checks/{check_id}")
+def update_check(check_id: int, req: CheckDefUpdate) -> dict:
+    """Edit a check. Changing the description regenerates the code; editing a
+    builtin's description converts it into a generated check."""
+    defs = load_registry()
+    target = next((d for d in defs if d.id == check_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"未知の check id: {check_id}")
+
+    if req.name is not None:
+        target.name = req.name.strip() or target.name
+    if req.category is not None:
+        target.category = req.category.strip() or target.category
+    if req.enabled is not None:
+        target.enabled = req.enabled
+
+    if req.description is not None and req.description != target.description:
+        target.description = req.description
+        # Regenerate from the new text (builtin → generated).
+        try:
+            target.code = generate_check_code(target.name, target.description)
+        except CodegenError as e:
+            raise HTTPException(status_code=400, detail=f"チェック再生成に失敗しました: {e}")
+        target.builtin_key = None
+
+    save_registry(defs)
+    return target.to_public_dict()
+
+
+@app.delete("/api/checks/{check_id}")
+def delete_check(check_id: int) -> dict:
+    """Remove a check (builtins may be deleted too)."""
+    defs = load_registry()
+    if not any(d.id == check_id for d in defs):
+        raise HTTPException(status_code=404, detail=f"未知の check id: {check_id}")
+    defs = [d for d in defs if d.id != check_id]
+    save_registry(defs)
+    return {"id": check_id, "deleted": True}
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,8 @@ services:
       - ./.parse_cache:/app/.parse_cache
       - ./.classifier_cache:/app/.classifier_cache
       - ./.all_entities_cache:/app/.all_entities_cache
+      # Editable check registry (system-wide check definitions)
+      - ./checks:/app/checks
 
   frontend:
     image: node:22-slim

@@ -38,3 +38,6 @@ static/
 /dxf_output/*.json
 /ifc_output/
 /*.ifc
+
+# Editable check registry (dev state; regenerated from builtins)
+/checks/

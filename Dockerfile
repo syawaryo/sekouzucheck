@@ -23,7 +23,10 @@ RUN set -eux; \
       libfontconfig1 libfreetype6 libdbus-1-3 libegl1 libgl1 libnss3 \
       libxrender1 libxext6 libxi6 libxtst6 libxrandr2 libxdamage1 \
       libxcomposite1 libxfixes3 libasound2 libpulse0 libxss1; \
-    wget --no-verbose -O /tmp/oda.deb "$ODA_DEB_URL"; \
+    wget --no-verbose -O /tmp/oda.deb \
+      --referer="https://www.opendesign.com/guestfiles/oda_file_converter" \
+      --user-agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36" \
+      "$ODA_DEB_URL"; \
     apt-get install -y --no-install-recommends /tmp/oda.deb; \
     rm /tmp/oda.deb; \
     which ODAFileConverter; \

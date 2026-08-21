@@ -121,16 +121,26 @@ def generate_check_code(name: str, description: str) -> str:
         pass
 
     import os
-    if not os.getenv("OPENAI_API_KEY"):
-        raise CodegenError("OPENAI_API_KEY が設定されていません。")
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    openai_key = os.getenv("OPENAI_API_KEY")
+    if not gemini_key and not openai_key:
+        raise CodegenError("GEMINI_API_KEY / OPENAI_API_KEY のいずれも設定されていません。")
 
     try:
         from openai import OpenAI
     except ImportError as e:
         raise CodegenError(f"openai SDK が見つかりません: {e}")
 
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    client = OpenAI()
+    if gemini_key:
+        # Gemini exposes an OpenAI-compatible endpoint, so the same SDK works.
+        model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        client = OpenAI(
+            api_key=gemini_key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        )
+    else:
+        model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        client = OpenAI()
     user = f"チェック名: {name}\nチェック基準:\n{description}"
 
     try:
